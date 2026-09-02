@@ -76,6 +76,28 @@ export class StreamLexer {
     flushText();
   }
 
+  private validateSchema(args: any, schema: any): string | null {
+      if (!schema || !schema.properties) return null; // No strict schema defined
+
+      for (const [key, prop] of Object.entries(schema.properties)) {
+          const type = (prop as any).type;
+          const val = args[key];
+
+          if (schema.required && schema.required.includes(key) && val === undefined) {
+              return `Missing required argument: '${key}'.`;
+          }
+
+          if (val !== undefined && type) {
+              if (type === 'string' && typeof val !== 'string') return `Argument '${key}' must be a string.`;
+              if (type === 'number' && typeof val !== 'number') return `Argument '${key}' must be a number.`;
+              if (type === 'boolean' && typeof val !== 'boolean') return `Argument '${key}' must be a boolean.`;
+              if (type === 'array' && !Array.isArray(val)) return `Argument '${key}' must be an array.`;
+              if (type === 'object' && (typeof val !== 'object' || Array.isArray(val) || val === null)) return `Argument '${key}' must be an object.`;
+          }
+      }
+      return null;
+  }
+
   private processBufferedToolCall() {
     let contentToParse = this.buffer;
     contentToParse = fuzzyTagRepair(contentToParse);
@@ -95,10 +117,11 @@ export class StreamLexer {
 
     if (parsed && typeof parsed === 'object' && parsed.name) {
 
+      let matchedTool: Tool | undefined;
       // Strict Validation: Unknown Tool
       if (this.options.allowedTools && this.options.allowedTools.length > 0) {
-          const isAllowed = this.options.allowedTools.some(t => t.function.name === parsed.name);
-          if (!isAllowed) {
+          matchedTool = this.options.allowedTools.find(t => t.function.name === parsed.name);
+          if (!matchedTool) {
                if (this.options.onPushbackRequest) {
                    this.options.onPushbackRequest(`You attempted to call an unknown tool: '${parsed.name}'. Please only use tools from the provided schema.`);
                }
@@ -118,6 +141,17 @@ export class StreamLexer {
                this.options.onPushbackRequest(`The arguments for tool '${parsed.name}' must be a valid JSON object.`);
            }
            return;
+      }
+
+      // Strict Validation: JSON Schema structure
+      if (matchedTool?.function?.parameters) {
+          const schemaError = this.validateSchema(parsed.arguments || {}, matchedTool.function.parameters);
+          if (schemaError) {
+              if (this.options.onPushbackRequest) {
+                   this.options.onPushbackRequest(`Schema validation failed for tool '${parsed.name}': ${schemaError}`);
+              }
+              return;
+          }
       }
 
       this.currentToolId = `call_${uuidv4().replace(/-/g, '').substring(0, 16)}`;

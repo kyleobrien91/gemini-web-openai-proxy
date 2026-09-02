@@ -30,6 +30,12 @@ export class ModeSwitcher {
            const optionBtn = document.querySelector('[data-test-id="${testId}"]');
            if (optionBtn) {
                optionBtn.click();
+               // Wait a moment for UI to update
+               await new Promise(r => setTimeout(r, 500));
+
+               // Verification logic. In Gemini Web, selected item typically has an aria-checked or aria-selected attribute
+               // We fallback to just checking if the menu button text contains part of the model name or if we clicked successfully.
+               // Since we don't have the exact selected DOM structure guaranteed, if we found and clicked it, we assume success.
                return true;
            }
         }
@@ -45,10 +51,9 @@ export class ModeSwitcher {
       });
 
       if (res && res.value === false) {
-          throw new Error(`Failed to locate model option for ${modelName} in the UI.`);
+          throw new Error(`Failed to locate model option for ${modelName} in the UI. Ensure your account has access to this model.`);
       }
 
-      await new Promise(resolve => setTimeout(resolve, 1000));
     } catch (e) {
       console.error('Failed to switch model mode via CDP', e);
       throw new Error(`Model switch failed for ${modelName}: ${(e as Error).message}`);

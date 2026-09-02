@@ -8,6 +8,11 @@ An OpenAI-compatible reverse proxy (`/v1/chat/completions`, `/v1/models`) that c
 - **CDP Session Bridge:** Reuses active browser authentication over port 9222 without exposing plaintext credentials.
 - **Streaming (SSE):** Delivers real-time generation chunks matching OpenAI delta specs.
 
+## Known Limitations
+
+- **DOM Streaming Heuristics:** Stream token extraction relies on observing DOM UI components via `MutationObserver`. A direct integration using the CDP Network/Fetch domains to capture raw backend network chunk streams is scheduled for a future version.
+- **Single Worker Serialization:** To prevent session corruption, the proxy runs a single queue. All incoming completion requests are strictly serialized and wait for the active request to complete.
+
 ## Setup
 
 1. **Start Chrome/Brave with CDP enabled:**
@@ -26,7 +31,7 @@ An OpenAI-compatible reverse proxy (`/v1/chat/completions`, `/v1/models`) that c
 
 3. **Start the Proxy:**
    ```bash
-   npm run start
+   npm start
    ```
    The proxy will default to listening on `http://localhost:8000`.
 

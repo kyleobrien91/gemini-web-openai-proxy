@@ -26,27 +26,18 @@ describe('E2E Proxy Flow', () => {
     });
 
     it('should complete a multi-turn OpenCode tool cycle', async () => {
-        vi.spyOn(browserWorker, 'initialize').mockResolvedValue();
-        let turnCount = 0;
-
         vi.spyOn(browserWorker, 'submitPrompt').mockImplementation(async (prompt, model, onToken, signal) => {
-            if (turnCount === 0) {
-                const response = "I need to check a file.\n<tool_call>\n{\"name\": \"read_file\", \"arguments\": {\"path\": \"test.txt\"}}\n</tool_call>";
-                const chunks = response.match(/.{1,3}/g) || [];
-                for (const chunk of chunks) {
-                    onToken(chunk);
-                }
-            } else if (turnCount === 1) {
+            if (prompt.includes("hello world")) {
                 const response = "The file says hello world.";
                 const chunks = response.match(/.{1,3}/g) || [];
-                for (const chunk of chunks) {
-                    onToken(chunk);
-                }
+                for (const chunk of chunks) onToken(chunk);
+            } else {
+                const response = "I need to check a file.\n<tool_call>\n{\"name\": \"read_file\", \"arguments\": {\"path\": \"test.txt\"}}\n</tool_call>";
+                const chunks = response.match(/.{1,3}/g) || [];
+                for (const chunk of chunks) onToken(chunk);
             }
-            turnCount++;
         });
 
-        // 1. Initial request from OpenCode
         const req1Promise = request(app).post('/v1/chat/completions').send({
             model: "gemini-3.7-flash",
             messages: [{ role: "user", content: "What is in test.txt?" }],
@@ -66,7 +57,6 @@ describe('E2E Proxy Flow', () => {
         expect(req1.body.choices[0].message.tool_calls[0].function.name).toBe('read_file');
         const toolCallId = req1.body.choices[0].message.tool_calls[0].id;
 
-        // 2. Second request from OpenCode (submitting tool result)
         const req2 = await request(app).post('/v1/chat/completions').send({
             model: "gemini-3.7-flash",
             messages: [
@@ -109,7 +99,7 @@ describe('E2E Proxy Flow', () => {
         const req = await request(app).post('/v1/chat/completions').send({
             model: "gemini-3.7-flash",
             messages: [{ role: "user", content: "Hello" }],
-            tools: [{ type: "function", function: { name: "read_file" } }],
+            tools: [{ type: "function", function: { name: "read_file", parameters: {} } }],
             tool_choice: "none",
             stream: false
         });
@@ -131,14 +121,36 @@ describe('E2E Proxy Flow', () => {
         const req = await request(app).post('/v1/chat/completions').send({
             model: "gemini-3.7-flash",
             messages: [{ role: "user", content: "Delete everything" }],
-            tools: [{ type: "function", function: { name: "read_file" } }],
+            tools: [{ type: "function", function: { name: "read_file", parameters: {} } }],
             stream: false
         });
 
         expect(req.status).toBe(200);
         expect(req.body.choices[0].finish_reason).toBe('stop');
-        // Because of the mock, it retries and succeeds with the fallback text
         expect(req.body.choices[0].message.content).toContain('Sorry');
+    });
+
+    it('should reject invalid schema arguments via pushback', async () => {
+         vi.spyOn(browserWorker, 'submitPrompt').mockImplementation(async (prompt, model, onToken, signal, isRetry) => {
+            if (!isRetry) {
+                // missing required 'path' argument
+                onToken("<tool_call>\n{\"name\": \"read_file\", \"arguments\": {}}\n</tool_call>");
+            } else {
+                // Provide valid args on retry
+                onToken("<tool_call>\n{\"name\": \"read_file\", \"arguments\": {\"path\": \"file.txt\"}}\n</tool_call>");
+            }
+        });
+
+        const req = await request(app).post('/v1/chat/completions').send({
+            model: "gemini-3.7-flash",
+            messages: [{ role: "user", content: "Read a file" }],
+            tools: [{ type: "function", function: { name: "read_file", parameters: { type: "object", properties: { path: { type: "string" } }, required: ["path"] } } }],
+            stream: false
+        });
+
+        expect(req.status).toBe(200);
+        expect(req.body.choices[0].finish_reason).toBe('tool_calls');
+        expect(req.body.choices[0].message.tool_calls[0].function.arguments).toContain('file.txt');
     });
 
     it('should serialize concurrent requests safely', async () => {

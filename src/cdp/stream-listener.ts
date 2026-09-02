@@ -1,5 +1,9 @@
 import { CDPConnection } from './connection.js';
 
+export interface StreamListenerHandle {
+    waitForCompletion: () => Promise<void>;
+}
+
 export class StreamListener {
   private cdp: CDPConnection;
 
@@ -7,7 +11,8 @@ export class StreamListener {
     this.cdp = cdp;
   }
 
-  async listen(onToken: (token: string) => void, signal?: AbortSignal): Promise<void> {
+  // Setup returns a handle. Setup must be awaited before submitting the prompt.
+  async setup(onToken: (token: string) => void, signal?: AbortSignal): Promise<StreamListenerHandle> {
     try {
         await this.cdp.send('Runtime.addBinding', { name: 'proxyEmitToken' });
     } catch (e) {
@@ -20,13 +25,19 @@ export class StreamListener {
         // Ignore if binding already exists
     }
 
-    let bindingHandler: (event: any) => void;
+    try {
+        await this.cdp.send('Runtime.addBinding', { name: 'proxyEmitError' });
+    } catch (e) {
+        // Ignore if binding already exists
+    }
 
-    return new Promise((resolve, reject) => {
-      let cleanup: () => void;
+    let bindingHandler: (event: any) => void;
+    let cleanupFunc: () => void;
+
+    const completionPromise = new Promise<void>((resolve, reject) => {
 
       const onAbort = () => {
-          cleanup();
+          cleanupFunc();
           reject(new Error("Request cancelled"));
       };
 
@@ -38,12 +49,12 @@ export class StreamListener {
       }
 
       const onDisconnect = () => {
-         cleanup();
+         cleanupFunc();
          reject(new Error("CDP WebSocket disconnected during stream"));
       };
       this.cdp.onDisconnect(onDisconnect);
 
-      cleanup = () => {
+      cleanupFunc = () => {
          this.cdp.off('Runtime.bindingCalled', bindingHandler);
          this.cdp.offDisconnect(onDisconnect);
          if (signal) signal.removeEventListener('abort', onAbort);
@@ -57,25 +68,26 @@ export class StreamListener {
             }
             window.__proxyObserverStarted = false;
          `;
-         // We do not await this, and we swallow errors because the connection might already be closed
          this.cdp.send('Runtime.evaluate', { expression: cleanupScript }).catch(() => {});
       };
 
       bindingHandler = (event: any) => {
         if (event.name === 'proxyEmitToken') {
           onToken(event.payload);
+        } else if (event.name === 'proxyEmitError') {
+          cleanupFunc();
+          reject(new Error(event.payload));
         } else if (event.name === 'proxyEmitComplete') {
-          cleanup();
+          cleanupFunc();
           resolve();
         }
       };
 
       this.cdp.on('Runtime.bindingCalled', bindingHandler);
+    });
 
-      // We use a robust script that first identifies the *current* number of responses.
-      // We only listen for mutations on the *new* response element that appears.
-      // We verify `currentText.startsWith(lastText)` before emitting deltas to handle DOM rerenders.
-      const script = `
+    // Inject the observer now, so we are guaranteed it is active BEFORE this setup resolves
+    const script = `
         (function() {
             if (window.__proxyObserverStarted) return;
             window.__proxyObserverStarted = true;
@@ -101,12 +113,10 @@ export class StreamListener {
                              lastText = currentText;
                              window.proxyEmitToken(diff);
                         } else {
-                             // DOM rerender shifted text completely. We emit the entire new string
-                             // Note: In strict SSE this could duplicate output to client if we don't clear client side,
-                             // but it's the safest way to ensure no data is lost on a massive rerender.
-                             // More sophisticated diffing could go here. For now, we sync state.
-                             window.proxyEmitToken(currentText.substring(lastText.length)); // Try a naive continuation or accept some duplication
-                             lastText = currentText;
+                             // DOM rerender shifted text completely. Fail the stream to prevent corruption.
+                             window.__proxyObserver.disconnect();
+                             window.__proxyObserverStarted = false;
+                             window.proxyEmitError("DOM rewrite detected; stream discontinuity. The UI modified already-emitted text prefix.");
                         }
                     }
                 }
@@ -115,12 +125,10 @@ export class StreamListener {
 
             let stableCount = 0;
             window.__proxyCheckDone = setInterval(() => {
-                // If we haven't even found the generation element yet, keep waiting
                 if (!generatingElement) return;
 
                 const sendBtn = document.querySelector('button[aria-label="Send prompt"], button.send-button-container');
 
-                // Fallback completion heuristic: button enabled and text has stopped changing for 2 ticks (1 sec)
                 if (sendBtn && !sendBtn.disabled && lastText.length > 0) {
                      stableCount++;
                      if (stableCount >= 2) {
@@ -133,12 +141,19 @@ export class StreamListener {
                      stableCount = 0;
                 }
             }, 500);
+
+            return "READY";
         })();
-      `;
-      this.cdp.send('Runtime.evaluate', { expression: script }).catch((e) => {
-          cleanup();
-          reject(e);
-      });
-    });
+    `;
+
+    const res = await this.cdp.send('Runtime.evaluate', { expression: script, returnByValue: true });
+    if (res?.value !== "READY") {
+         throw new Error("StreamListener failed to setup DOM observer.");
+    }
+
+    // We are fully set up.
+    return {
+        waitForCompletion: () => completionPromise
+    };
   }
 }

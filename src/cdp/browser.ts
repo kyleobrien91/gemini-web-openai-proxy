@@ -2,6 +2,7 @@ import { CDPConnection } from './connection.js';
 import { TabManager } from './tab-manager.js';
 import { ModeSwitcher } from './mode-switcher.js';
 import { StreamListener } from './stream-listener.js';
+import { Mutex } from '../utils/mutex.js';
 
 export class BrowserWorker {
     public cdp: CDPConnection;
@@ -36,8 +37,8 @@ export class BrowserWorker {
         await this.modeSwitcher.switchMode(model);
         if (signal?.aborted) return;
 
-        // 2. Setup listener BEFORE submitting
-        const listenPromise = this.streamListener.listen(onToken, signal);
+        // 2. Setup listener BEFORE submitting, guaranteeing completion of setup
+        const streamHandle = await this.streamListener.setup(onToken, signal);
 
         // 3. Submit prompt via DOM automation
         const script = `
@@ -62,7 +63,7 @@ export class BrowserWorker {
         });
 
         // 4. Wait for stream to finish
-        await listenPromise;
+        await streamHandle.waitForCompletion();
     }
 }
 
