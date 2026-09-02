@@ -18,21 +18,40 @@ export class TabManager {
   }
 
   async resetChatSession(): Promise<void> {
-     // Navigate to base app url to clear context
-     await this.cdp.send('Page.navigate', { url: 'https://gemini.google.com/app' });
+     return new Promise<void>(async (resolve, reject) => {
+         let timeoutId: NodeJS.Timeout;
 
-     // Wait for load event
-     await new Promise<void>((resolve, reject) => {
-         const timeout = setTimeout(() => reject(new Error("Timeout waiting for page load")), 5000);
          const loadHandler = () => {
-             clearTimeout(timeout);
-             this.cdp.off('Page.loadEventFired', loadHandler);
+             cleanup();
              resolve();
          };
-         this.cdp.on('Page.loadEventFired', loadHandler);
-     }).catch(e => console.warn("Page load event warning:", e));
 
-     // Give SPA a moment to render
-     await new Promise(resolve => setTimeout(resolve, 1000));
+         const cleanup = () => {
+             clearTimeout(timeoutId);
+             this.cdp.off('Page.loadEventFired', loadHandler);
+         };
+
+         // 1. Register listener BEFORE navigation
+         this.cdp.on('Page.loadEventFired', loadHandler);
+
+         // Setup timeout
+         timeoutId = setTimeout(() => {
+             cleanup();
+             reject(new Error("Timeout waiting for Page.loadEventFired during resetChatSession"));
+         }, 10000);
+
+         // 2. Initiate navigation
+         try {
+             await this.cdp.send('Page.navigate', { url: 'https://gemini.google.com/app' });
+         } catch (e) {
+             cleanup();
+             return reject(e);
+         }
+
+         // 3. (Waiting happens via the promise resolution from loadHandler)
+     }).then(async () => {
+         // Give SPA a moment to render after load
+         await new Promise(r => setTimeout(r, 1000));
+     });
   }
 }
