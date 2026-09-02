@@ -27,11 +27,21 @@ export class TabManager {
          let timeoutId: NodeJS.Timeout;
          let expectedLoaderId: string | null = null;
          let expectedFrameId: string | null = null;
+         let hasNavigated = false;
+
+         const pendingEvents: any[] = [];
 
          const lifecycleHandler = (event: any) => {
-             // Block any events that arrive before we have our expected IDs populated
-             if (!expectedLoaderId || !expectedFrameId) return;
+             // If we haven't navigated yet, capture events in a buffer to prevent losing fast loads
+             if (!hasNavigated) {
+                 pendingEvents.push(event);
+                 return;
+             }
 
+             processLifecycleEvent(event);
+         };
+
+         const processLifecycleEvent = (event: any) => {
              // We only care about events matching the exact navigation we just initiated
              if (event.loaderId !== expectedLoaderId) return;
              if (event.frameId !== expectedFrameId) return;
@@ -64,6 +74,12 @@ export class TabManager {
              }
              expectedLoaderId = res.loaderId;
              expectedFrameId = res.frameId;
+             hasNavigated = true;
+
+             // Process any events that arrived while we were waiting for Page.navigate to resolve
+             for (const event of pendingEvents) {
+                 processLifecycleEvent(event);
+             }
          } catch (e) {
              cleanup();
              return reject(e);

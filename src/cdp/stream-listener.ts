@@ -91,15 +91,24 @@ export class StreamListener {
           this.cdp.onDisconnect(onDisconnect);
 
           bindingHandler = (event: any) => {
-            // We verify the payload or event is bound to this turn if possible,
-            // but since we only have one active turn due to mutex,
-            // the bindings will respond to the active execution loop.
-            if (event.name === 'proxyEmitToken') {
-              onToken(event.payload);
-            } else if (event.name === 'proxyEmitError') {
-              rollback().then(() => reject(new Error(event.payload)));
-            } else if (event.name === 'proxyEmitComplete') {
-              rollback().then(() => resolve());
+            if (event.name === 'proxyEmitToken' || event.name === 'proxyEmitError' || event.name === 'proxyEmitComplete') {
+                try {
+                    const parsedPayload = JSON.parse(event.payload);
+                    // Discard payloads belonging to stale or future turns
+                    if (parsedPayload.turnId !== turnId) {
+                        return;
+                    }
+
+                    if (event.name === 'proxyEmitToken') {
+                      onToken(parsedPayload.payload);
+                    } else if (event.name === 'proxyEmitError') {
+                      rollback().then(() => reject(new Error(parsedPayload.payload)));
+                    } else if (event.name === 'proxyEmitComplete') {
+                      rollback().then(() => resolve());
+                    }
+                } catch (e) {
+                    // If JSON parse fails, it wasn't formatted by our new bound emitter structure. Ignore.
+                }
             }
           };
 
@@ -117,6 +126,11 @@ export class StreamListener {
                     submitInterval: null
                 };
                 const state = window['__proxyTurn_${turnId}'];
+
+                const emitTurnPayload = (bindingName, payload) => {
+                    const data = JSON.stringify({ turnId: "${turnId}", payload: payload });
+                    window[bindingName](data);
+                };
 
                 const SELECTOR = '.model-response-text, model-response, .response-container-content, message-content';
                 const initialCount = document.querySelectorAll(SELECTOR).length;
@@ -140,11 +154,11 @@ export class StreamListener {
                             if (currentText.startsWith(lastText)) {
                                  const diff = currentText.substring(lastText.length);
                                  lastText = currentText;
-                                 window.proxyEmitToken(diff);
+                                 emitTurnPayload('proxyEmitToken', diff);
                             } else {
                                  // DOM rerender shifted text completely. Fail the stream to prevent corruption.
                                  state.observer.disconnect();
-                                 window.proxyEmitError("DOM rewrite detected; stream discontinuity. The UI modified already-emitted text prefix.");
+                                 emitTurnPayload('proxyEmitError', "DOM rewrite detected; stream discontinuity. The UI modified already-emitted text prefix.");
                             }
                         }
                     }
@@ -167,7 +181,7 @@ export class StreamListener {
                          if (stableCount >= 2) {
                              clearInterval(state.checkDone);
                              state.observer.disconnect();
-                             window.proxyEmitComplete("done");
+                             emitTurnPayload('proxyEmitComplete', "done");
                          }
                     } else {
                          stableCount = 0;
