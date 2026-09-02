@@ -8,8 +8,17 @@ export class StreamListener {
   }
 
   async listen(onToken: (token: string) => void): Promise<void> {
-    await this.cdp.send('Runtime.addBinding', { name: 'proxyEmitToken' });
-    await this.cdp.send('Runtime.addBinding', { name: 'proxyEmitComplete' });
+    try {
+        await this.cdp.send('Runtime.addBinding', { name: 'proxyEmitToken' });
+    } catch (e) {
+        // Ignore if binding already exists
+    }
+
+    try {
+        await this.cdp.send('Runtime.addBinding', { name: 'proxyEmitComplete' });
+    } catch (e) {
+        // Ignore if binding already exists
+    }
 
     let bindingHandler: (event: any) => void;
 
@@ -31,7 +40,7 @@ export class StreamListener {
 
             let lastText = "";
             const observer = new MutationObserver(() => {
-                const elements = document.querySelectorAll('message-content');
+                const elements = document.querySelectorAll('.model-response-text, model-response, .response-container-content, message-content');
                 if (elements.length > 0) {
                     const latest = elements[elements.length - 1];
                     const currentText = latest.innerText || latest.textContent || "";
@@ -45,7 +54,7 @@ export class StreamListener {
             observer.observe(document.body, { childList: true, subtree: true, characterData: true });
 
             const checkDone = setInterval(() => {
-                const sendBtn = document.querySelector('button[aria-label="Send prompt"]');
+                const sendBtn = document.querySelector('button[aria-label="Send prompt"], button.send-button-container');
                 if (sendBtn && !sendBtn.disabled && lastText.length > 0) {
                     clearInterval(checkDone);
                     observer.disconnect();

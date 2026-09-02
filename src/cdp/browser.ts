@@ -31,13 +31,11 @@ export class BrowserWorker {
             (async function() {
                 const editor = document.querySelector('.ql-editor.textarea[contenteditable="true"]');
                 if (editor) {
-                    // Using textContent to avoid raw HTML injection issues if not formatted
-                    editor.innerHTML = "";
-                    editor.innerText = ${JSON.stringify(prompt)};
-                    editor.dispatchEvent(new Event('input', { bubbles: true }));
-                    await new Promise(r => setTimeout(r, 100));
-
-                    const submitBtn = document.querySelector('button[aria-label="Send prompt"]');
+                    editor.focus();
+                    document.execCommand('selectAll', false, null);
+                    document.execCommand('insertText', false, ${JSON.stringify(prompt)});
+                    await new Promise(r => setTimeout(r, 150));
+                    const submitBtn = document.querySelector('button[aria-label="Send prompt"], button.send-button-container');
                     if (submitBtn) {
                         submitBtn.click();
                     }

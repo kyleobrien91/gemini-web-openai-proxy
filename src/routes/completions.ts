@@ -87,13 +87,11 @@ router.post('/v1/chat/completions', async (req, res) => {
       });
       lexer.finish();
 
-      if (!isStream) {
-         return {
-             content: bufferedContent,
-             toolCalls: bufferedToolCalls,
-             finishReason: stopReason
-         };
-      }
+      return {
+          content: bufferedContent,
+          toolCalls: bufferedToolCalls,
+          finishReason: stopReason
+      };
     };
 
     if (isStream) {
@@ -105,8 +103,8 @@ router.post('/v1/chat/completions', async (req, res) => {
          // Handle client abort
       });
 
-      await executeStream(prompt);
-      res.write(formatSSE(createDoneChunk(chatId, model, 'stop')));
+      const result = await executeStream(prompt);
+      res.write(formatSSE(createDoneChunk(chatId, model, result.finishReason as 'stop' | 'tool_calls')));
       res.write(formatSSE('[DONE]'));
       res.end();
 
