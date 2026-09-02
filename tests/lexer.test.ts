@@ -26,6 +26,7 @@ describe('StreamLexer', () => {
     const onFinished = vi.fn();
 
     const lexer = new StreamLexer({
+      allowedTools: [{ type: "function", function: { name: "test_tool" } }],
       onContent,
       onToolCallStart,
       onToolCallArg,
@@ -69,6 +70,10 @@ describe('StreamLexer', () => {
       const onToolCallEnd = vi.fn();
 
       const lexer = new StreamLexer({
+        allowedTools: [
+            { type: "function", function: { name: "tool1" } },
+            { type: "function", function: { name: "tool2" } }
+        ],
         onContent,
         onToolCallStart,
         onToolCallArg,

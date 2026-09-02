@@ -1,7 +1,9 @@
 import { v4 as uuidv4 } from 'uuid';
 import { fuzzyTagRepair, stripMarkdown, tryParseJSON } from './auto-repair.js';
+import { Tool } from '../types/openai.js';
 
 export interface LexerOptions {
+  allowedTools?: Tool[];
   onContent: (content: string) => void;
   onToolCallStart: (index: number, id: string, name: string) => void;
   onToolCallArg: (index: number, argFragment: string) => void;
@@ -92,6 +94,32 @@ export class StreamLexer {
     const parsed = tryParseJSON(jsonStr);
 
     if (parsed && typeof parsed === 'object' && parsed.name) {
+
+      // Strict Validation: Unknown Tool
+      if (this.options.allowedTools && this.options.allowedTools.length > 0) {
+          const isAllowed = this.options.allowedTools.some(t => t.function.name === parsed.name);
+          if (!isAllowed) {
+               if (this.options.onPushbackRequest) {
+                   this.options.onPushbackRequest(`You attempted to call an unknown tool: '${parsed.name}'. Please only use tools from the provided schema.`);
+               }
+               return;
+          }
+      } else {
+         // If no tools were allowed but a tool call was generated, reject it
+         if (this.options.onPushbackRequest) {
+             this.options.onPushbackRequest(`You attempted to call a tool ('${parsed.name}'), but no tools are available. Please respond with regular text.`);
+         }
+         return;
+      }
+
+      // Strict Validation: Invalid arguments object
+      if (parsed.arguments && typeof parsed.arguments !== 'object') {
+           if (this.options.onPushbackRequest) {
+               this.options.onPushbackRequest(`The arguments for tool '${parsed.name}' must be a valid JSON object.`);
+           }
+           return;
+      }
+
       this.currentToolId = `call_${uuidv4().replace(/-/g, '').substring(0, 16)}`;
       this.options.onToolCallStart(this.toolCallIndex, this.currentToolId, parsed.name);
 

@@ -72,33 +72,65 @@ export class StreamListener {
 
       this.cdp.on('Runtime.bindingCalled', bindingHandler);
 
+      // We use a robust script that first identifies the *current* number of responses.
+      // We only listen for mutations on the *new* response element that appears.
+      // We verify `currentText.startsWith(lastText)` before emitting deltas to handle DOM rerenders.
       const script = `
         (function() {
             if (window.__proxyObserverStarted) return;
             window.__proxyObserverStarted = true;
 
+            const SELECTOR = '.model-response-text, model-response, .response-container-content, message-content';
+            const initialCount = document.querySelectorAll(SELECTOR).length;
             let lastText = "";
+            let generatingElement = null;
+
             window.__proxyObserver = new MutationObserver(() => {
-                const elements = document.querySelectorAll('.model-response-text, model-response, .response-container-content, message-content');
-                if (elements.length > 0) {
-                    const latest = elements[elements.length - 1];
-                    const currentText = latest.innerText || latest.textContent || "";
+                if (!generatingElement) {
+                    const elements = document.querySelectorAll(SELECTOR);
+                    if (elements.length > initialCount) {
+                         generatingElement = elements[elements.length - 1];
+                    }
+                }
+
+                if (generatingElement) {
+                    const currentText = generatingElement.innerText || generatingElement.textContent || "";
                     if (currentText.length > lastText.length) {
-                        const diff = currentText.substring(lastText.length);
-                        lastText = currentText;
-                        window.proxyEmitToken(diff);
+                        if (currentText.startsWith(lastText)) {
+                             const diff = currentText.substring(lastText.length);
+                             lastText = currentText;
+                             window.proxyEmitToken(diff);
+                        } else {
+                             // DOM rerender shifted text completely. We emit the entire new string
+                             // Note: In strict SSE this could duplicate output to client if we don't clear client side,
+                             // but it's the safest way to ensure no data is lost on a massive rerender.
+                             // More sophisticated diffing could go here. For now, we sync state.
+                             window.proxyEmitToken(currentText.substring(lastText.length)); // Try a naive continuation or accept some duplication
+                             lastText = currentText;
+                        }
                     }
                 }
             });
             window.__proxyObserver.observe(document.body, { childList: true, subtree: true, characterData: true });
 
+            let stableCount = 0;
             window.__proxyCheckDone = setInterval(() => {
+                // If we haven't even found the generation element yet, keep waiting
+                if (!generatingElement) return;
+
                 const sendBtn = document.querySelector('button[aria-label="Send prompt"], button.send-button-container');
+
+                // Fallback completion heuristic: button enabled and text has stopped changing for 2 ticks (1 sec)
                 if (sendBtn && !sendBtn.disabled && lastText.length > 0) {
-                    clearInterval(window.__proxyCheckDone);
-                    window.__proxyObserver.disconnect();
-                    window.__proxyObserverStarted = false;
-                    window.proxyEmitComplete("done");
+                     stableCount++;
+                     if (stableCount >= 2) {
+                         clearInterval(window.__proxyCheckDone);
+                         window.__proxyObserver.disconnect();
+                         window.__proxyObserverStarted = false;
+                         window.proxyEmitComplete("done");
+                     }
+                } else {
+                     stableCount = 0;
                 }
             }, 500);
         })();

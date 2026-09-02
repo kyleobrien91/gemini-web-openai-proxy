@@ -2,40 +2,37 @@ import { CDPConnection } from './connection.js';
 
 export class TabManager {
   private cdp: CDPConnection;
-  private targetId: string | null = null;
-  private sessionId: string | null = null;
 
   constructor(cdp: CDPConnection) {
     this.cdp = cdp;
   }
 
   async ensureGeminiTab(): Promise<void> {
-    const target = await this.cdp.discoverTarget();
+    if (!this.cdp.targetId) {
+        throw new Error("No target ID associated with connection");
+    }
 
-    // We attach to the target via the browser target or directly, for simplicity we use the ws url directly in connection.ts
-    // but here we manage the tab state
+    // We already discovered a gemini tab in connection.ts, we just need to reset its state
+    // for a clean run if requested.
+    await this.resetChatSession();
+  }
 
-    const { url } = await this.cdp.send('Target.getTargetInfo', { targetId: target.id });
+  async resetChatSession(): Promise<void> {
+     // Navigate to base app url to clear context
+     await this.cdp.send('Page.navigate', { url: 'https://gemini.google.com/app' });
 
-    if (!url.includes('gemini.google.com/app')) {
-      await this.cdp.send('Page.navigate', { url: 'https://gemini.google.com/app' });
-      // Wait for page to load
-      await new Promise<void>((resolve) => {
+     // Wait for load event
+     await new Promise<void>((resolve, reject) => {
+         const timeout = setTimeout(() => reject(new Error("Timeout waiting for page load")), 5000);
          const loadHandler = () => {
+             clearTimeout(timeout);
              this.cdp.off('Page.loadEventFired', loadHandler);
              resolve();
          };
          this.cdp.on('Page.loadEventFired', loadHandler);
-      });
-    } else {
-        // Reset chat session to ensure stateless mode
-        await this.resetChatSession();
-    }
-  }
+     }).catch(e => console.warn("Page load event warning:", e));
 
-  async resetChatSession(): Promise<void> {
-     // A simple way to reset is to reload or navigate to the base app url
-     await this.cdp.send('Page.navigate', { url: 'https://gemini.google.com/app' });
-     await new Promise(resolve => setTimeout(resolve, 2000)); // Give it time to render
+     // Give SPA a moment to render
+     await new Promise(resolve => setTimeout(resolve, 1000));
   }
 }

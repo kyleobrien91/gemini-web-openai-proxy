@@ -18,8 +18,7 @@ export class ModeSwitcher {
   async switchMode(modelName: string): Promise<void> {
     const testId = this.modeMapping[modelName];
     if (!testId) {
-      console.warn(`Unknown model ${modelName}, keeping current mode.`);
-      return;
+      throw new Error(`Unknown model: ${modelName}. Supported models are 3.7-flash, 3.1-pro, 3.5-flash-lite.`);
     }
 
     const script = `
@@ -31,19 +30,28 @@ export class ModeSwitcher {
            const optionBtn = document.querySelector('[data-test-id="${testId}"]');
            if (optionBtn) {
                optionBtn.click();
+               return true;
            }
         }
+        return false;
       })();
     `;
 
     try {
-      await this.cdp.send('Runtime.evaluate', {
+      const res = await this.cdp.send('Runtime.evaluate', {
         expression: script,
         awaitPromise: true,
+        returnByValue: true
       });
+
+      if (res && res.value === false) {
+          throw new Error(`Failed to locate model option for ${modelName} in the UI.`);
+      }
+
       await new Promise(resolve => setTimeout(resolve, 1000));
     } catch (e) {
       console.error('Failed to switch model mode via CDP', e);
+      throw new Error(`Model switch failed for ${modelName}: ${(e as Error).message}`);
     }
   }
 }

@@ -8,23 +8,46 @@ export class CDPConnection {
   private pendingRequests = new Map<number, { resolve: (val: any) => void; reject: (err: any) => void }>();
   private eventListeners = new Map<string, Set<(params: any) => void>>();
   private disconnectListeners: Set<() => void> = new Set();
+  public targetId: string | null = null;
 
   async discoverTarget(): Promise<CDPTarget> {
+    // If we already established ownership of a specific target, try to find it again
+    // to ensure it still exists and hasn't been closed.
+
     const response = await fetch(`http://${config.cdpHost}:${config.cdpPort}/json`);
     if (!response.ok) {
       throw new Error(`Failed to discover targets: ${response.statusText}`);
     }
     const targets: CDPTarget[] = await response.json();
 
-    // Try to find an existing Gemini app tab, or just use any normal page target
-    let target = targets.find(t => t.url.includes('gemini.google.com/app'));
-    if (!target) {
-        target = targets.find(t => t.type === 'page');
+    let target: CDPTarget | undefined;
+
+    if (this.targetId) {
+        target = targets.find(t => t.id === this.targetId);
+        if (!target) {
+            // Our owned tab was closed. Reset ownership.
+            this.targetId = null;
+        }
     }
 
     if (!target) {
-      throw new Error('No valid CDP target found');
+        // Find an existing Gemini app tab, or create one
+        target = targets.find(t => t.url.includes('gemini.google.com/app'));
+
+        if (!target) {
+            // Attempt to create a new tab via CDP
+            const newTabRes = await fetch(`http://${config.cdpHost}:${config.cdpPort}/json/new?https://gemini.google.com/app`, { method: 'PUT' });
+            if (newTabRes.ok) {
+                 target = await newTabRes.json();
+            }
+        }
     }
+
+    if (!target) {
+      throw new Error('No active Gemini target found and failed to create one. Please authenticate Gemini in your browser.');
+    }
+
+    this.targetId = target.id;
     return target;
   }
 
@@ -36,7 +59,13 @@ export class CDPConnection {
     return new Promise((resolve, reject) => {
       this.ws = new WebSocket(debuggerUrl);
 
-      this.ws.on('open', () => {
+      this.ws.on('open', async () => {
+        // Explicitly enable Page domain upon connection
+        try {
+            await this.send('Page.enable');
+        } catch (e) {
+            console.error("Failed to enable Page domain", e);
+        }
         resolve();
       });
 
