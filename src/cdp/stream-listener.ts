@@ -104,7 +104,8 @@ export class StreamListener {
                     if (!generatingElement) {
                         const elements = document.querySelectorAll(SELECTOR);
                         if (elements.length > initialCount) {
-                             generatingElement = elements[elements.length - 1];
+                             // STRICT BINDING: Only attach to the exact next element that appeared
+                             generatingElement = elements[initialCount];
                         }
                     }
 

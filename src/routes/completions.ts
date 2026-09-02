@@ -76,11 +76,18 @@ router.post('/v1/chat/completions', async (req, res) => {
     }
 
     // Coordinate Request locking the Mutex across retries
-    await routeMutex.lock();
+    // We pass signal so if we time out or cancel while waiting, we don't acquire the lock
+    const acquired = await routeMutex.lock(signal);
+    if (!acquired) {
+        cleanup();
+        return; // Request was aborted while waiting in queue, exit cleanly without executing
+    }
 
     // We declare executeTurn inside the lock block so we can safely catch init errors.
     try {
         const executeTurn = async (currentPrompt: string, isRetry: boolean, allowedTools?: Tool[]) => {
+          if (signal.aborted) throw new Error("Request cancelled or timed out");
+
           let bufferedContent = "";
           let bufferedToolCalls: any[] = [];
           let currentToolCall: any = null;
@@ -91,6 +98,7 @@ router.post('/v1/chat/completions', async (req, res) => {
             allowedTools,
             onContent: (content) => {
               if (isStream) {
+                // Note: Reflection retries with streaming are disabled entirely to prevent interleaved output
                 res.write(formatSSE(createContentChunk(chatId, model, content)));
               } else {
                  bufferedContent += content;
@@ -127,6 +135,7 @@ router.post('/v1/chat/completions', async (req, res) => {
           });
 
           // Submit prompt to live browser
+          if (signal.aborted) throw new Error("Request cancelled or timed out");
           await browserWorker.submitPrompt(currentPrompt, model, (token) => {
               lexer.processChunk(token);
           }, signal, isRetry);
