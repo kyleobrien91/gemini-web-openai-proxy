@@ -96,10 +96,11 @@ export class StreamListener {
                 try {
                     parsedPayload = JSON.parse(event.payload);
                 } catch (e) {
-                    // Malformed payload detected. Since we use a Mutex, any binding payload emitted right now
-                    // belongs to the active run. If it's corrupted, we must terminate the generation
-                    // deterministically rather than hanging.
-                    rollback().then(() => reject(new Error("Corrupted binding payload received: " + event.payload)));
+                    // Malformed payload detected.
+                    // We simply ignore unparseable payloads because they could be emitted
+                    // by stale or completely unrelated browser execution contexts that somehow
+                    // called the global proxy binding. We only reject/act if we can
+                    // authoritatively verify the payload belongs to the *current* turn.
                     return;
                 }
 

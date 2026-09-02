@@ -17,60 +17,50 @@ export class ModeSwitcher {
     'gemini-2.5-flash': 'bard-mode-option-56fdd199312815e2'
   };
 
-  private exactModeLabels: Record<string, string[]> = {
-      'gemini-3.7-flash': ['3.7 Flash', 'Gemini 1.5 Flash'],
-      'gemini-3.1-pro': ['3.1 Pro', 'Gemini 1.5 Pro', 'Gemini Advanced'],
-      'gemini-3.5-flash-lite': ['3.5 Flash-Lite'],
-
-      // Since these are aliases for the above models, they expect the EXACT same UI labels to be present.
-      'gemini-2.5-pro': ['3.1 Pro', 'Gemini 1.5 Pro', 'Gemini Advanced'],
-      'gemini-2.5-flash': ['3.7 Flash', 'Gemini 1.5 Flash'],
-  };
-
   constructor(cdp: CDPConnection) {
     this.cdp = cdp;
   }
 
-  // Exposed purely for unit testing the verification logic without needing a full CDP mock stack
-  public static verifyLabelMatch(selectedText: string, allowedLabels: string[]): boolean {
-       if (!selectedText || selectedText.trim() === "") return false;
-       return allowedLabels.some(label => selectedText === label);
-  }
-
   async switchMode(modelName: string): Promise<void> {
     const testId = this.modeMapping[modelName];
-    const expectedLabels = this.exactModeLabels[modelName];
-    if (!testId || !expectedLabels) {
+    if (!testId) {
       throw new Error(`Unknown model: ${modelName}. Supported models are 3.7-flash, 3.1-pro, 3.5-flash-lite.`);
     }
 
     const script = `
       (async function() {
+        // Open the menu
         const menuBtn = document.querySelector('button[data-test-id="bard-mode-menu-button"]');
-        if (menuBtn) {
-           menuBtn.click();
-           await new Promise(r => setTimeout(r, 500));
-           const optionBtn = document.querySelector('[data-test-id="${testId}"]');
-           if (optionBtn) {
-               optionBtn.click();
-               // Wait for the UI state to settle
-               await new Promise(r => setTimeout(r, 500));
+        if (!menuBtn) return "MENU_NOT_FOUND";
 
-               const finalBtn = document.querySelector('button[data-test-id="bard-mode-menu-button"]');
-               const selectedText = (finalBtn ? finalBtn.textContent || "" : "").trim();
+        menuBtn.click();
+        await new Promise(r => setTimeout(r, 500)); // wait for dropdown animation
 
-               const allowedLabels = ${JSON.stringify(expectedLabels)};
+        // Find and click the target option
+        const optionBtn = document.querySelector('[data-test-id="${testId}"]');
+        if (!optionBtn) return "OPTION_NOT_FOUND";
 
-               // AUTHORITATIVE VERIFICATION:
-               // The selected text must exactly match one of the known valid exact labels.
-               // We do NOT use generic substrings or startsWith.
-               const verified = allowedLabels.some(label => selectedText === label);
+        optionBtn.click();
+        await new Promise(r => setTimeout(r, 500)); // wait for UI state to settle
 
-               if (verified) return "SUCCESS";
-               return "VERIFICATION_FAILED: " + selectedText;
-           }
+        // Re-open menu temporarily to inspect the selected state of the option
+        menuBtn.click();
+        await new Promise(r => setTimeout(r, 500));
+
+        const verifyBtn = document.querySelector('[data-test-id="${testId}"]');
+        if (!verifyBtn) return "VERIFICATION_OPTION_VANISHED";
+
+        // Check for common accessible active states
+        const isSelected = verifyBtn.getAttribute('aria-selected') === 'true' || verifyBtn.getAttribute('aria-checked') === 'true';
+
+        // Close menu again
+        menuBtn.click();
+
+        if (isSelected) {
+            return "SUCCESS";
         }
-        return "ELEMENT_NOT_FOUND";
+
+        return "VERIFICATION_FAILED_NOT_SELECTED";
       })();
     `;
 
@@ -82,11 +72,11 @@ export class ModeSwitcher {
       });
 
       if (res && res.value) {
-          if (res.value === "ELEMENT_NOT_FOUND") {
+          if (res.value === "MENU_NOT_FOUND" || res.value === "OPTION_NOT_FOUND") {
                throw new Error(`Failed to locate model option for ${modelName} in the UI. Ensure your account has access to this model.`);
           }
-          if (res.value.startsWith("VERIFICATION_FAILED")) {
-               throw new Error(`Model switch verification failed. Expected exact match for ${modelName}, but UI indicates currently selected model is: ${res.value}`);
+          if (res.value !== "SUCCESS") {
+               throw new Error(`Model switch verification failed. Expected ${modelName} to be active, but UI indicates it is not selected. Debug: ${res.value}`);
           }
           // Success!
       } else {
