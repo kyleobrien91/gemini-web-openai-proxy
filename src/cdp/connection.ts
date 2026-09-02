@@ -11,9 +11,6 @@ export class CDPConnection {
   public targetId: string | null = null;
 
   async discoverTarget(): Promise<CDPTarget> {
-    // If we already established ownership of a specific target, try to find it again
-    // to ensure it still exists and hasn't been closed.
-
     const response = await fetch(`http://${config.cdpHost}:${config.cdpPort}/json`);
     if (!response.ok) {
       throw new Error(`Failed to discover targets: ${response.statusText}`);
@@ -25,17 +22,14 @@ export class CDPConnection {
     if (this.targetId) {
         target = targets.find(t => t.id === this.targetId);
         if (!target) {
-            // Our owned tab was closed. Reset ownership.
             this.targetId = null;
         }
     }
 
     if (!target) {
-        // Find an existing Gemini app tab, or create one
         target = targets.find(t => t.url.includes('gemini.google.com/app'));
 
         if (!target) {
-            // Attempt to create a new tab via CDP
             const newTabRes = await fetch(`http://${config.cdpHost}:${config.cdpPort}/json/new?https://gemini.google.com/app`, { method: 'PUT' });
             if (newTabRes.ok) {
                  target = await newTabRes.json();
@@ -53,20 +47,21 @@ export class CDPConnection {
 
   async connect(debuggerUrl: string): Promise<void> {
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-        return; // Already connected
+        return;
     }
 
     return new Promise((resolve, reject) => {
       this.ws = new WebSocket(debuggerUrl);
 
       this.ws.on('open', async () => {
-        // Explicitly enable Page domain upon connection
+        // Explicitly enable Page domain and propagate failure to reject connection
         try {
             await this.send('Page.enable');
+            resolve();
         } catch (e) {
-            console.error("Failed to enable Page domain", e);
+            this.disconnect();
+            reject(new Error(`Failed to enable Page domain during CDP connection: ${e}`));
         }
-        resolve();
       });
 
       this.ws.on('message', (data: WebSocket.RawData) => {

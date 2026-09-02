@@ -4,7 +4,9 @@ import { TabManager } from '../src/cdp/tab-manager.js';
 
 describe('TabManager Navigation Correlation', () => {
     it('should ignore uncorrelated load events', async () => {
-        vi.useFakeTimers();
+        vi.useFakeTimers({
+            toFake: ['setTimeout', 'clearTimeout']
+        });
 
         const cdp = new CDPConnection();
         // Mock connection state
@@ -32,6 +34,8 @@ describe('TabManager Navigation Correlation', () => {
 
         // Let event loop settle so send is called
         await Promise.resolve();
+        await Promise.resolve();
+        await Promise.resolve();
 
         // Trigger uncorrelated event
         lifecycleHandler({ name: 'load', loaderId: 'loader99', frameId: 'frame99' });
@@ -48,7 +52,8 @@ describe('TabManager Navigation Correlation', () => {
         // Trigger correlated event
         lifecycleHandler({ name: 'load', loaderId: 'loader1', frameId: 'frame1' });
 
-        // Fast forward through the 1s SPA render wait
+        // Let the promise resolve, then advance the SPA wait timers
+        await Promise.resolve();
         vi.runAllTimers();
 
         await resetPromise; // Should resolve successfully now
