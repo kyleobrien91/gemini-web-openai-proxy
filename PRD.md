@@ -159,49 +159,6 @@ These models map directly to the **real options available in the web interface U
       "metadata": {
         "alias_for": "gemini-3.7-flash"
       }
-    },
-    {
-      "id": "claude-3-7-sonnet",
-      "object": "model",
-      "created": 1740000000,
-      "owned_by": "anthropic-web",
-      "permission": [],
-      "root": "claude-3-7-sonnet",
-      "parent": null,
-      "metadata": {
-        "web_label": "Claude 3.7 Sonnet (claude.ai)"
-      }
-    },
-    {
-      "id": "claude-3-7-sonnet-thinking",
-      "object": "model",
-      "created": 1740000000,
-      "owned_by": "anthropic-web",
-      "permission": [],
-      "root": "claude-3-7-sonnet-thinking",
-      "parent": null,
-      "metadata": {
-        "web_label": "Claude 3.7 Sonnet + Extended Thinking (claude.ai)",
-        "thinking": true
-      }
-    },
-    {
-      "id": "claude-3-5-sonnet",
-      "object": "model",
-      "created": 1740000000,
-      "owned_by": "anthropic-web",
-      "permission": [],
-      "root": "claude-3-5-sonnet",
-      "parent": null
-    },
-    {
-      "id": "claude-3-5-haiku",
-      "object": "model",
-      "created": 1740000000,
-      "owned_by": "anthropic-web",
-      "permission": [],
-      "root": "claude-3-5-haiku",
-      "parent": null
     }
   ]
 }
