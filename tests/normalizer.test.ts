@@ -46,7 +46,7 @@ describe('Normalizer', () => {
       messages: [
         { role: 'user', content: 'Do task A' },
         { role: 'assistant', content: 'Ok', tool_calls: [{ function: { name: 'tool_a', arguments: '{}' } }] },
-        { role: 'tool', name: 'tool_a', content: 'Result A' },
+        { role: 'tool', name: 'tool_a', tool_call_id: 'call_123', content: 'Result A' },
         { role: 'user', content: 'Now do task B' }
       ]
     };
@@ -57,7 +57,7 @@ describe('Normalizer', () => {
     expect(output).toContain('[Assistant]:');
     expect(output).toContain('<tool_call>');
     expect(output).toContain('tool_a');
-    expect(output).toContain('[Tool Result (tool_a)]:\nResult A');
+    expect(output).toContain('[Tool Result (name: tool_a, id: call_123)]:\nResult A');
     expect(output).toContain('### Current Instruction:');
     expect(output).toContain('[User]:\nNow do task B');
   });

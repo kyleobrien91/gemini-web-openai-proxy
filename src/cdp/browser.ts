@@ -1,16 +1,19 @@
 import { CDPConnection } from './connection.js';
 import { TabManager } from './tab-manager.js';
 import { ModeSwitcher } from './mode-switcher.js';
+import { StreamListener } from './stream-listener.js';
 
 export class BrowserWorker {
     public cdp: CDPConnection;
     public tabManager: TabManager;
     public modeSwitcher: ModeSwitcher;
+    public streamListener: StreamListener;
 
     constructor() {
         this.cdp = new CDPConnection();
         this.tabManager = new TabManager(this.cdp);
         this.modeSwitcher = new ModeSwitcher(this.cdp);
+        this.streamListener = new StreamListener(this.cdp);
     }
 
     async initialize() {
@@ -26,14 +29,15 @@ export class BrowserWorker {
         // 2. Submit prompt via DOM automation
         const script = `
             (async function() {
-                const editor = document.querySelector('rich-textarea div[contenteditable="true"]');
+                const editor = document.querySelector('.ql-editor.textarea[contenteditable="true"]');
                 if (editor) {
-                    editor.innerHTML = ${JSON.stringify(prompt)};
-                    // Trigger input event
+                    // Using textContent to avoid raw HTML injection issues if not formatted
+                    editor.innerHTML = "";
+                    editor.innerText = ${JSON.stringify(prompt)};
                     editor.dispatchEvent(new Event('input', { bubbles: true }));
                     await new Promise(r => setTimeout(r, 100));
 
-                    const submitBtn = document.querySelector('button[aria-label="Send message"]');
+                    const submitBtn = document.querySelector('button[aria-label="Send prompt"]');
                     if (submitBtn) {
                         submitBtn.click();
                     }
@@ -46,21 +50,8 @@ export class BrowserWorker {
             awaitPromise: true
         });
 
-        // 3. Listen for response stream
-        // In a real implementation we would use a mutation observer or network interceptor
-        // Here we simulate the stream response for testing/completion
-        return new Promise((resolve) => {
-            let count = 0;
-            const interval = setInterval(() => {
-                count++;
-                if (count < 10) {
-                   onToken("token ");
-                } else {
-                   clearInterval(interval);
-                   resolve();
-                }
-            }, 100);
-        });
+        // 3. Listen for response stream via the stream listener
+        await this.streamListener.listen(onToken);
     }
 }
 

@@ -22,16 +22,13 @@ export class ModeSwitcher {
       return;
     }
 
-    // This requires executing script on the page to click the UI elements.
-    // 1. Open the dropdown
-    // 2. Click the specific option
     const script = `
       (async function() {
-        const menuBtn = document.querySelector('button[data-testid="bard-mode-menu-button"]');
+        const menuBtn = document.querySelector('button[data-test-id="bard-mode-menu-button"]');
         if (menuBtn) {
            menuBtn.click();
            await new Promise(r => setTimeout(r, 500));
-           const optionBtn = document.querySelector('[data-testid="${testId}"]');
+           const optionBtn = document.querySelector('[data-test-id="${testId}"]');
            if (optionBtn) {
                optionBtn.click();
            }
@@ -44,7 +41,6 @@ export class ModeSwitcher {
         expression: script,
         awaitPromise: true,
       });
-      // Wait a moment for mode to switch
       await new Promise(resolve => setTimeout(resolve, 1000));
     } catch (e) {
       console.error('Failed to switch model mode via CDP', e);

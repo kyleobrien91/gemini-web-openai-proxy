@@ -3,8 +3,10 @@ import { v4 as uuidv4 } from 'uuid';
 import { ChatCompletionRequestSchema } from '../types/openai.js';
 import { normalizeMessages } from '../prompt/normalizer.js';
 import { StreamLexer } from '../lexer/stream-lexer.js';
+import { generateReflectionPrompt } from '../lexer/reflection.js';
 import { createContentChunk, createToolHeaderChunk, createToolArgChunk, createDoneChunk, formatSSE } from '../utils/sse.js';
 import { browserWorker } from '../cdp/browser.js';
+import { config } from '../config.js';
 
 const router = Router();
 
@@ -21,64 +23,115 @@ router.post('/v1/chat/completions', async (req, res) => {
     const model = request.model;
 
     const prompt = normalizeMessages(request);
+    let retries = 0;
+
+    const executeStream = async (currentPrompt: string) => {
+      let bufferedContent = "";
+      let bufferedToolCalls: any[] = [];
+      let currentToolCall: any = null;
+      let stopReason = 'stop';
+
+      const lexer = new StreamLexer({
+        onContent: (content) => {
+          if (isStream) {
+            res.write(formatSSE(createContentChunk(chatId, model, content)));
+          } else {
+             bufferedContent += content;
+          }
+        },
+        onToolCallStart: (index, id, name) => {
+          if (isStream) {
+            res.write(formatSSE(createToolHeaderChunk(chatId, model, index, id, name)));
+          } else {
+              currentToolCall = {
+                  index, id, type: 'function', function: { name, arguments: '' }
+              };
+          }
+        },
+        onToolCallArg: (index, argFragment) => {
+          if (isStream) {
+            res.write(formatSSE(createToolArgChunk(chatId, model, index, argFragment)));
+          } else {
+             if (currentToolCall) currentToolCall.function.arguments += argFragment;
+          }
+        },
+        onToolCallEnd: (index) => {
+           if (!isStream && currentToolCall) {
+               bufferedToolCalls.push(currentToolCall);
+               currentToolCall = null;
+           }
+        },
+        onFinished: (reason) => {
+          stopReason = reason;
+        },
+        onPushbackRequest: async (reason) => {
+          if (retries < config.maxRetries) {
+             retries++;
+             const pushbackPrompt = generateReflectionPrompt(reason);
+             // We need to re-run the execute loop in place
+             await executeStream(pushbackPrompt);
+          } else {
+             if (isStream) {
+                 res.write(formatSSE(createContentChunk(chatId, model, `\n\nError: ${reason}`)));
+             } else {
+                 bufferedContent += `\n\nError: ${reason}`;
+             }
+          }
+        }
+      });
+
+      // Submit prompt to live browser
+      await browserWorker.initialize().catch(e => console.error("CDP Init error", e));
+      await browserWorker.submitPrompt(currentPrompt, model, (token) => {
+          lexer.processChunk(token);
+      });
+      lexer.finish();
+
+      if (!isStream) {
+         return {
+             content: bufferedContent,
+             toolCalls: bufferedToolCalls,
+             finishReason: stopReason
+         };
+      }
+    };
 
     if (isStream) {
       res.setHeader('Content-Type', 'text/event-stream');
       res.setHeader('Cache-Control', 'no-cache');
       res.setHeader('Connection', 'keep-alive');
 
-      const lexer = new StreamLexer({
-        onContent: (content) => {
-          res.write(formatSSE(createContentChunk(chatId, model, content)));
-        },
-        onToolCallStart: (index, id, name) => {
-          res.write(formatSSE(createToolHeaderChunk(chatId, model, index, id, name)));
-        },
-        onToolCallArg: (index, argFragment) => {
-          res.write(formatSSE(createToolArgChunk(chatId, model, index, argFragment)));
-        },
-        onToolCallEnd: (index) => {},
-        onFinished: (reason) => {
-          res.write(formatSSE(createDoneChunk(chatId, model, reason)));
-          res.write(formatSSE('[DONE]'));
-          res.end();
-        },
-        onPushbackRequest: (reason) => {
-            res.write(formatSSE(createContentChunk(chatId, model, `\n\nError: ${reason}`)));
-            res.write(formatSSE(createDoneChunk(chatId, model, 'stop')));
-            res.write(formatSSE('[DONE]'));
-            res.end();
-        }
-      });
-
       req.on('close', () => {
          // Handle client abort
       });
 
-      // Submit prompt to live browser
-      await browserWorker.initialize().catch(e => console.error("CDP Init error", e));
-      await browserWorker.submitPrompt(prompt, model, (token) => {
-          lexer.processChunk(token);
-      });
-      lexer.finish();
+      await executeStream(prompt);
+      res.write(formatSSE(createDoneChunk(chatId, model, 'stop')));
+      res.write(formatSSE('[DONE]'));
+      res.end();
 
     } else {
-      res.json({
-        id: chatId,
-        object: 'chat.completion',
-        created: Math.floor(Date.now() / 1000),
-        model,
-        choices: [
-          {
-            index: 0,
-            message: {
-              role: 'assistant',
-              content: 'Non-streaming response is currently a stub. Use stream: true.'
-            },
-            finish_reason: 'stop'
-          }
-        ]
-      });
+       // Non-streaming response
+       const result = await executeStream(prompt);
+       if (result) {
+           res.json({
+               id: chatId,
+               object: 'chat.completion',
+               created: Math.floor(Date.now() / 1000),
+               model,
+               choices: [
+                 {
+                   index: 0,
+                   message: {
+                     role: 'assistant',
+                     content: result.content || null,
+                     tool_calls: result.toolCalls.length > 0 ? result.toolCalls : undefined
+                   },
+                   finish_reason: result.toolCalls.length > 0 ? 'tool_calls' : 'stop'
+                 }
+               ]
+           });
+       }
     }
 
   } catch (error: any) {
