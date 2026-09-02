@@ -2,6 +2,7 @@ import { Router } from 'express';
 
 const router = Router();
 
+// Ensure models listed here strictly match what ModeSwitcher can actually toggle
 const MODELS = [
   {
     id: "gemini-3.7-flash",
@@ -14,19 +15,6 @@ const MODELS = [
     metadata: {
       web_label: "3.7 Flash (All-around help)",
       web_dom_testid: "bard-mode-option-56fdd199312815e2"
-    }
-  },
-  {
-    id: "gemini-3.7-flash-thinking",
-    object: "model",
-    created: 1740000000,
-    owned_by: "google-web",
-    permission: [],
-    root: "gemini-3.7-flash-thinking",
-    parent: null,
-    metadata: {
-      web_label: "3.7 Flash + Extended thinking (Complex problem solving)",
-      thinking: true
     }
   },
   {

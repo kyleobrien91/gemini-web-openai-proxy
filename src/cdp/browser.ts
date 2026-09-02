@@ -16,17 +16,30 @@ export class BrowserWorker {
         this.streamListener = new StreamListener(this.cdp);
     }
 
-    async initialize() {
+    async initialize(isRetry: boolean = false) {
         const target = await this.cdp.discoverTarget();
         await this.cdp.connect(target.webSocketDebuggerUrl);
-        await this.tabManager.ensureGeminiTab();
+        // Only reset the chat tab if this is a fresh request
+        if (!isRetry) {
+             await this.tabManager.ensureGeminiTab();
+        }
     }
 
-    async submitPrompt(prompt: string, model: string, onToken: (token: string) => void): Promise<void> {
+    async submitPrompt(prompt: string, model: string, onToken: (token: string) => void, signal?: AbortSignal, isRetry: boolean = false): Promise<void> {
+        if (signal?.aborted) return;
+
+        // Initialization happens inside the route lock. We pass isRetry to prevent chat reset.
+        await this.initialize(isRetry);
+        if (signal?.aborted) return;
+
         // 1. Switch mode
         await this.modeSwitcher.switchMode(model);
+        if (signal?.aborted) return;
 
-        // 2. Submit prompt via DOM automation
+        // 2. Setup listener BEFORE submitting
+        const listenPromise = this.streamListener.listen(onToken, signal);
+
+        // 3. Submit prompt via DOM automation
         const script = `
             (async function() {
                 const editor = document.querySelector('.ql-editor.textarea[contenteditable="true"]');
@@ -48,8 +61,8 @@ export class BrowserWorker {
             awaitPromise: true
         });
 
-        // 3. Listen for response stream via the stream listener
-        await this.streamListener.listen(onToken);
+        // 4. Wait for stream to finish
+        await listenPromise;
     }
 }
 

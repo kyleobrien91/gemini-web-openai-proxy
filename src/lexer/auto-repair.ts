@@ -13,15 +13,6 @@ export function stripMarkdown(text: string): string {
 export function fuzzyTagRepair(text: string): string {
   let repaired = text;
 
-  // Convert standard code blocks mapped to file writes
-  const fileBlockRegex = /```(?:python|javascript|typescript|js|ts|py|sh|bash)?\s*file=["']?([^"']+)["']?\s*([\s\S]*?)```/i;
-  const fileMatch = repaired.match(fileBlockRegex);
-  if (fileMatch) {
-    const [, path, content] = fileMatch;
-    repaired = `<tool_call>\n{"name": "write_to_file", "arguments": ${JSON.stringify({ path, content: content.trim() })} }\n</tool_call>`;
-    return repaired;
-  }
-
   // Repair fuzzy tags to <tool_call>
   repaired = repaired.replace(/<tool-call>/g, '<tool_call>')
                      .replace(/<\/tool-call>/g, '</tool_call>')

@@ -14,15 +14,6 @@ describe('Auto Repair', () => {
     expect(output).toContain('</tool_call>');
   });
 
-  it('should extract file write from markdown code block', () => {
-    const input = '```python file="test.py"\nprint("hello")\n```';
-    const output = fuzzyTagRepair(input);
-    expect(output).toContain('<tool_call>');
-    expect(output).toContain('write_to_file');
-    expect(output).toContain('test.py');
-    expect(output).toContain('print(\\"hello\\")');
-  });
-
   it('should parse relaxed JSON', () => {
     const jsonStr = `{ name: "test", 'arguments': { a: 1 } }`;
     const parsed = tryParseJSON(jsonStr);

@@ -7,6 +7,7 @@ export class CDPConnection {
   private messageId = 1;
   private pendingRequests = new Map<number, { resolve: (val: any) => void; reject: (err: any) => void }>();
   private eventListeners = new Map<string, Set<(params: any) => void>>();
+  private disconnectListeners: Set<() => void> = new Set();
 
   async discoverTarget(): Promise<CDPTarget> {
     const response = await fetch(`http://${config.cdpHost}:${config.cdpPort}/json`);
@@ -28,6 +29,10 @@ export class CDPConnection {
   }
 
   async connect(debuggerUrl: string): Promise<void> {
+    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+        return; // Already connected
+    }
+
     return new Promise((resolve, reject) => {
       this.ws = new WebSocket(debuggerUrl);
 
@@ -54,13 +59,38 @@ export class CDPConnection {
       });
 
       this.ws.on('error', (err) => {
+        this.rejectAllPending(err);
+        this.notifyDisconnect();
         reject(err);
       });
 
       this.ws.on('close', () => {
-        // Handle reconnect logic if necessary
+        this.ws = null;
+        this.rejectAllPending(new Error("CDP WebSocket closed"));
+        this.notifyDisconnect();
       });
     });
+  }
+
+  private rejectAllPending(err: any) {
+     for (const [id, req] of this.pendingRequests.entries()) {
+         req.reject(err);
+         this.pendingRequests.delete(id);
+     }
+  }
+
+  private notifyDisconnect() {
+     for (const listener of this.disconnectListeners) {
+         listener();
+     }
+  }
+
+  onDisconnect(listener: () => void) {
+     this.disconnectListeners.add(listener);
+  }
+
+  offDisconnect(listener: () => void) {
+     this.disconnectListeners.delete(listener);
   }
 
   async send(method: string, params: any = {}): Promise<any> {

@@ -34,7 +34,7 @@ export class StreamLexer {
 
     for (const char of chunk) {
       if (this.state === 'TEXT') {
-        if (char === '<' || char === '`') {
+        if (char === '<') {
           flushText();
           this.state = 'BUFFERING';
           this.buffer = char;
@@ -43,19 +43,6 @@ export class StreamLexer {
         }
       } else if (this.state === 'BUFFERING') {
         this.buffer += char;
-
-        // Potential markdown block ````json
-        if (this.buffer.startsWith('`')) {
-             if (this.buffer.length > 20 || (this.buffer.includes('\n') && !this.buffer.includes('```'))) {
-                // Not a markdown block starting with tool call, flush buffer
-                textBuffer += this.buffer;
-                this.buffer = '';
-                this.state = 'TEXT';
-             } else if (this.buffer.includes('```') && this.buffer.includes('\n')) {
-                 this.state = 'TOOL_CALL';
-             }
-             continue;
-        }
 
         const tagPrefix = '<tool_call>';
         if (tagPrefix.startsWith(this.buffer)) {
@@ -76,7 +63,7 @@ export class StreamLexer {
         }
       } else if (this.state === 'TOOL_CALL') {
         this.buffer += char;
-        if (this.buffer.endsWith('</tool_call>') || this.buffer.endsWith('</tool-call>') || this.buffer.endsWith('</tool>') || this.buffer.endsWith('</function_call>') || (this.buffer.includes('```') && this.buffer.endsWith('```\n'))) {
+        if (this.buffer.endsWith('</tool_call>') || this.buffer.endsWith('</tool-call>') || this.buffer.endsWith('</tool>') || this.buffer.endsWith('</function_call>')) {
           this.processBufferedToolCall();
           this.state = 'TEXT';
           this.buffer = '';
