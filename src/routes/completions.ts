@@ -136,12 +136,22 @@ router.post('/v1/chat/completions', async (req, res) => {
 
           // Submit prompt to live browser
           if (signal.aborted) throw new Error("Request cancelled or timed out");
-          await browserWorker.submitPrompt(currentPrompt, model, (token) => {
+
+          // Submit ensures stream listener is correctly started and awaited
+          const handle = await browserWorker.submitPrompt(currentPrompt, model, (token) => {
               lexer.processChunk(token);
           }, signal, isRetry);
 
           if (signal.aborted && process.env.NODE_ENV !== 'test') {
+              if (handle?.cleanup) await handle.cleanup();
               throw new Error("Request cancelled or timed out");
+          }
+
+          // Await stream listener completion safely
+          try {
+              if (handle?.waitForCompletion) await handle.waitForCompletion();
+          } finally {
+              if (handle?.cleanup) await handle.cleanup();
           }
 
           lexer.finish();

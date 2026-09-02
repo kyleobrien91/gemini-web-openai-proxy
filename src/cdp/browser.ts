@@ -1,7 +1,8 @@
 import { CDPConnection } from './connection.js';
 import { TabManager } from './tab-manager.js';
 import { ModeSwitcher } from './mode-switcher.js';
-import { StreamListener } from './stream-listener.js';
+import { StreamListener, StreamListenerHandle } from './stream-listener.js';
+import { Mutex } from '../utils/mutex.js';
 
 export class BrowserWorker {
     public cdp: CDPConnection;
@@ -25,20 +26,23 @@ export class BrowserWorker {
         }
     }
 
-    async submitPrompt(prompt: string, model: string, onToken: (token: string) => void, signal?: AbortSignal, isRetry: boolean = false): Promise<void> {
-        if (signal?.aborted) return;
+    async submitPrompt(prompt: string, model: string, onToken: (token: string) => void, signal?: AbortSignal, isRetry: boolean = false): Promise<StreamListenerHandle | null> {
+        if (signal?.aborted) return null;
 
         // Initialization happens inside the route lock. We pass isRetry to prevent chat reset.
         await this.initialize(isRetry);
-        if (signal?.aborted) return;
+        if (signal?.aborted) return null;
 
         // 1. Switch mode
         await this.modeSwitcher.switchMode(model);
-        if (signal?.aborted) return;
+        if (signal?.aborted) return null;
 
         // 2. Setup listener BEFORE submitting, guaranteeing completion of setup
         const streamHandle = await this.streamListener.setup(onToken, signal);
-        if (signal?.aborted) return;
+        if (signal?.aborted) {
+            await streamHandle.cleanup();
+            return null;
+        }
 
         // 3. Submit prompt via DOM automation
         const script = `
@@ -56,10 +60,16 @@ export class BrowserWorker {
                     const maxAttempts = 50; // 50 * 100ms = 5 seconds max wait
 
                     const interval = setInterval(() => {
+                        if (window.__proxyAbort) {
+                            clearInterval(interval);
+                            resolve("ABORTED");
+                            return;
+                        }
+
                         attempts++;
                         const submitBtn = document.querySelector('button[aria-label="Send prompt"], button.send-button-container');
 
-                        if (submitBtn && !submitBtn.disabled) {
+                        if (submitBtn && submitBtn.offsetParent !== null && !submitBtn.disabled) {
                             clearInterval(interval);
                             submitBtn.click();
                             resolve("SUCCESS");
@@ -78,13 +88,18 @@ export class BrowserWorker {
             returnByValue: true
         });
 
+        if (submitRes && submitRes.value === "ABORTED") {
+            await streamHandle.cleanup();
+            return null;
+        }
+
         if (submitRes && submitRes.value !== "SUCCESS") {
+            await streamHandle.cleanup();
             throw new Error(`Failed to submit prompt: ${submitRes.value}`);
         }
 
-        // 4. Wait for stream to finish
-        if (signal?.aborted) return;
-        await streamHandle.waitForCompletion();
+        // 4. Return handle so caller can await completion
+        return streamHandle;
     }
 }
 

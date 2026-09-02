@@ -2,6 +2,7 @@ import { CDPConnection } from './connection.js';
 
 export interface StreamListenerHandle {
     waitForCompletion: () => Promise<void>;
+    cleanup: () => Promise<void>;
 }
 
 export class StreamListener {
@@ -31,8 +32,12 @@ export class StreamListener {
 
     // Transactional cleanup tracking
     let isSetup = false;
+    let isCleanedUp = false;
 
-    const rollback = () => {
+    const rollback = async () => {
+        if (isCleanedUp) return;
+        isCleanedUp = true;
+
         if (bindingHandler) this.cdp.off('Runtime.bindingCalled', bindingHandler);
         if (onDisconnect) this.cdp.offDisconnect(onDisconnect);
         if (signal && onAbort) signal.removeEventListener('abort', onAbort);
@@ -45,8 +50,15 @@ export class StreamListener {
                clearInterval(window.__proxyCheckDone);
            }
            window.__proxyObserverStarted = false;
+           window.__proxyAbort = true; // Signal submission script to abort if waiting
         `;
-        this.cdp.send('Runtime.evaluate', { expression: cleanupScript }).catch(() => {});
+
+        try {
+            // Await cleanup fully to ensure DOM state is clear before returning lock
+            await this.cdp.send('Runtime.evaluate', { expression: cleanupScript, awaitPromise: true });
+        } catch (e) {
+            // If the connection is already dead, evaluate will fail, but that's fine
+        }
     };
 
     try {
@@ -57,8 +69,7 @@ export class StreamListener {
         const completionPromise = new Promise<void>((resolve, reject) => {
 
           onAbort = () => {
-              rollback();
-              reject(new Error("Request cancelled"));
+              rollback().then(() => reject(new Error("Request cancelled")));
           };
 
           if (signal) {
@@ -69,8 +80,7 @@ export class StreamListener {
           }
 
           onDisconnect = () => {
-             rollback();
-             reject(new Error("CDP WebSocket disconnected during stream"));
+             rollback().then(() => reject(new Error("CDP WebSocket disconnected during stream")));
           };
           this.cdp.onDisconnect(onDisconnect);
 
@@ -78,11 +88,9 @@ export class StreamListener {
             if (event.name === 'proxyEmitToken') {
               onToken(event.payload);
             } else if (event.name === 'proxyEmitError') {
-              rollback();
-              reject(new Error(event.payload));
+              rollback().then(() => reject(new Error(event.payload)));
             } else if (event.name === 'proxyEmitComplete') {
-              rollback();
-              resolve();
+              rollback().then(() => resolve());
             }
           };
 
@@ -94,6 +102,7 @@ export class StreamListener {
             (function() {
                 if (window.__proxyObserverStarted) return;
                 window.__proxyObserverStarted = true;
+                window.__proxyAbort = false;
 
                 const SELECTOR = '.model-response-text, model-response, .response-container-content, message-content';
                 const initialCount = document.querySelectorAll(SELECTOR).length;
@@ -156,14 +165,15 @@ export class StreamListener {
         }
 
         isSetup = true;
-        // We are fully set up.
+
         return {
-            waitForCompletion: () => completionPromise
+            waitForCompletion: () => completionPromise,
+            cleanup: rollback
         };
 
     } catch (e) {
         if (!isSetup) {
-            rollback();
+            await rollback();
         }
         throw e;
     }
