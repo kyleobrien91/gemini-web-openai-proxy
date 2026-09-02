@@ -29,28 +29,27 @@ export class ModeSwitcher {
 
     const script = `
       (async function() {
-        // Open the menu
         const menuBtn = document.querySelector('button[data-test-id="bard-mode-menu-button"]');
         if (!menuBtn) return "MENU_NOT_FOUND";
 
         menuBtn.click();
-        await new Promise(r => setTimeout(r, 500)); // wait for dropdown animation
+        await new Promise(r => setTimeout(r, 500));
 
-        // Find and click the target option
         const optionBtn = document.querySelector('[data-test-id="${testId}"]');
         if (!optionBtn) return "OPTION_NOT_FOUND";
 
         optionBtn.click();
-        await new Promise(r => setTimeout(r, 500)); // wait for UI state to settle
 
-        // Re-open menu temporarily to inspect the selected state of the option
+        // Wait for the UI state to settle
+        await new Promise(r => setTimeout(r, 500));
+
+        // Re-open menu to inspect the selected state directly on the exact option element
         menuBtn.click();
         await new Promise(r => setTimeout(r, 500));
 
         const verifyBtn = document.querySelector('[data-test-id="${testId}"]');
         if (!verifyBtn) return "VERIFICATION_OPTION_VANISHED";
 
-        // Check for common accessible active states
         const isSelected = verifyBtn.getAttribute('aria-selected') === 'true' || verifyBtn.getAttribute('aria-checked') === 'true';
 
         // Close menu again
@@ -76,7 +75,7 @@ export class ModeSwitcher {
                throw new Error(`Failed to locate model option for ${modelName} in the UI. Ensure your account has access to this model.`);
           }
           if (res.value !== "SUCCESS") {
-               throw new Error(`Model switch verification failed. Expected ${modelName} to be active, but UI indicates it is not selected. Debug: ${res.value}`);
+               throw new Error(`Model switch verification failed. Expected exact DOM state match for ${modelName} (${testId}), but UI indicates it is not selected. Debug state: ${res.value}`);
           }
           // Success!
       } else {
