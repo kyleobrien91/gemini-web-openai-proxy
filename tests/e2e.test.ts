@@ -6,6 +6,7 @@ import completionsRouter from '../src/routes/completions.js';
 import modelsRouter from '../src/routes/models.js';
 import { browserWorker } from '../src/cdp/browser.js';
 import { config } from '../src/config.js';
+import { StreamListenerHandle } from '../src/cdp/stream-listener.js';
 
 const app = express();
 app.use(express.json());
@@ -16,17 +17,12 @@ describe('E2E Proxy Flow', () => {
 
     beforeAll(() => {
         config.requestTimeoutMs = 10000;
-        vi.useFakeTimers({
-            toFake: ['setTimeout', 'clearTimeout']
-        });
-    });
-
-    afterAll(() => {
-        vi.useRealTimers();
+        // Supertest requires actual timers to process HTTP requests.
+        // We shouldn't use FakeTimers unconditionally on async I/O routes.
     });
 
     it('should complete a multi-turn OpenCode tool cycle', async () => {
-        vi.spyOn(browserWorker, 'submitPrompt').mockImplementation(async (prompt, model, onToken, signal) => {
+        vi.spyOn(browserWorker, 'submitPrompt').mockImplementation(async (turnId, prompt, model, onToken, signal) => {
             if (prompt.includes("hello world")) {
                 const response = "The file says hello world.";
                 const chunks = response.match(/.{1,3}/g) || [];
@@ -36,6 +32,7 @@ describe('E2E Proxy Flow', () => {
                 const chunks = response.match(/.{1,3}/g) || [];
                 for (const chunk of chunks) onToken(chunk);
             }
+            return { waitForCompletion: async () => {}, cleanup: async () => {} } as StreamListenerHandle;
         });
 
         const req1Promise = request(app).post('/v1/chat/completions').send({
@@ -91,9 +88,10 @@ describe('E2E Proxy Flow', () => {
 
     it('should strip tools when tool_choice is none', async () => {
         let capturedPrompt = "";
-        vi.spyOn(browserWorker, 'submitPrompt').mockImplementation(async (prompt, model, onToken, signal) => {
+        vi.spyOn(browserWorker, 'submitPrompt').mockImplementation(async (turnId, prompt, model, onToken, signal) => {
             capturedPrompt = prompt;
             onToken("Just regular text");
+            return { waitForCompletion: async () => {}, cleanup: async () => {} } as StreamListenerHandle;
         });
 
         const req = await request(app).post('/v1/chat/completions').send({
@@ -110,12 +108,13 @@ describe('E2E Proxy Flow', () => {
     });
 
     it('should reject unknown tool outputs via pushback', async () => {
-         vi.spyOn(browserWorker, 'submitPrompt').mockImplementation(async (prompt, model, onToken, signal, isRetry) => {
+         vi.spyOn(browserWorker, 'submitPrompt').mockImplementation(async (turnId, prompt, model, onToken, signal, isRetry) => {
             if (!isRetry) {
                 onToken("<tool_call>\n{\"name\": \"rm_rf\", \"arguments\": {}}\n</tool_call>");
             } else {
                 onToken("Sorry, I can't do that.");
             }
+            return { waitForCompletion: async () => {}, cleanup: async () => {} } as StreamListenerHandle;
         });
 
         const req = await request(app).post('/v1/chat/completions').send({
@@ -131,7 +130,7 @@ describe('E2E Proxy Flow', () => {
     });
 
     it('should reject invalid schema arguments via pushback', async () => {
-         vi.spyOn(browserWorker, 'submitPrompt').mockImplementation(async (prompt, model, onToken, signal, isRetry) => {
+         vi.spyOn(browserWorker, 'submitPrompt').mockImplementation(async (turnId, prompt, model, onToken, signal, isRetry) => {
             if (!isRetry) {
                 // missing required 'path' argument
                 onToken("<tool_call>\n{\"name\": \"read_file\", \"arguments\": {}}\n</tool_call>");
@@ -139,6 +138,7 @@ describe('E2E Proxy Flow', () => {
                 // Provide valid args on retry
                 onToken("<tool_call>\n{\"name\": \"read_file\", \"arguments\": {\"path\": \"file.txt\"}}\n</tool_call>");
             }
+            return { waitForCompletion: async () => {}, cleanup: async () => {} } as StreamListenerHandle;
         });
 
         const req = await request(app).post('/v1/chat/completions').send({
@@ -157,12 +157,13 @@ describe('E2E Proxy Flow', () => {
         let executing = 0;
         let violated = false;
 
-        vi.spyOn(browserWorker, 'submitPrompt').mockImplementation(async (prompt, model, onToken, signal) => {
+        vi.spyOn(browserWorker, 'submitPrompt').mockImplementation(async (turnId, prompt, model, onToken, signal) => {
             executing++;
             if (executing > 1) violated = true;
             await new Promise(resolve => process.nextTick(resolve)); // yield
             onToken("Done");
             executing--;
+            return { waitForCompletion: async () => {}, cleanup: async () => {} } as StreamListenerHandle;
         });
 
         const p1 = request(app).post('/v1/chat/completions').send({

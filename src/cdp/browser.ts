@@ -2,7 +2,6 @@ import { CDPConnection } from './connection.js';
 import { TabManager } from './tab-manager.js';
 import { ModeSwitcher } from './mode-switcher.js';
 import { StreamListener, StreamListenerHandle } from './stream-listener.js';
-import { Mutex } from '../utils/mutex.js';
 
 export class BrowserWorker {
     public cdp: CDPConnection;
@@ -26,7 +25,7 @@ export class BrowserWorker {
         }
     }
 
-    async submitPrompt(prompt: string, model: string, onToken: (token: string) => void, signal?: AbortSignal, isRetry: boolean = false): Promise<StreamListenerHandle | null> {
+    async submitPrompt(turnId: string, prompt: string, model: string, onToken: (token: string) => void, signal?: AbortSignal, isRetry: boolean = false): Promise<StreamListenerHandle | null> {
         if (signal?.aborted) return null;
 
         // Initialization happens inside the route lock. We pass isRetry to prevent chat reset.
@@ -38,7 +37,7 @@ export class BrowserWorker {
         if (signal?.aborted) return null;
 
         // 2. Setup listener BEFORE submitting, guaranteeing completion of setup
-        const streamHandle = await this.streamListener.setup(onToken, signal);
+        const streamHandle = await this.streamListener.setup(turnId, onToken, signal);
         if (signal?.aborted) {
             await streamHandle.cleanup();
             return null;
@@ -47,6 +46,9 @@ export class BrowserWorker {
         // 3. Submit prompt via DOM automation
         const script = `
             (async function() {
+                const state = window['__proxyTurn_${turnId}'];
+                if (!state || state.aborted) return "ABORTED";
+
                 const editor = document.querySelector('.ql-editor.textarea[contenteditable="true"]');
                 if (!editor) return "EDITOR_NOT_FOUND";
 
@@ -54,14 +56,14 @@ export class BrowserWorker {
                 document.execCommand('selectAll', false, null);
                 document.execCommand('insertText', false, ${JSON.stringify(prompt)});
 
-                // Wait for the send button to become usable and enabled
+                // Wait for the send button to become genuinely usable
                 return new Promise((resolve) => {
                     let attempts = 0;
                     const maxAttempts = 50; // 50 * 100ms = 5 seconds max wait
 
-                    const interval = setInterval(() => {
-                        if (window.__proxyAbort) {
-                            clearInterval(interval);
+                    state.submitInterval = setInterval(() => {
+                        if (state.aborted) {
+                            clearInterval(state.submitInterval);
                             resolve("ABORTED");
                             return;
                         }
@@ -69,12 +71,16 @@ export class BrowserWorker {
                         attempts++;
                         const submitBtn = document.querySelector('button[aria-label="Send prompt"], button.send-button-container');
 
-                        if (submitBtn && submitBtn.offsetParent !== null && !submitBtn.disabled) {
-                            clearInterval(interval);
+                        // Strict usability check: exists, visible, not disabled, no aria-disabled
+                        const isVisible = submitBtn && submitBtn.offsetParent !== null && submitBtn.getBoundingClientRect().height > 0;
+                        const isEnabled = submitBtn && !submitBtn.disabled && submitBtn.getAttribute('aria-disabled') !== 'true';
+
+                        if (isVisible && isEnabled) {
+                            clearInterval(state.submitInterval);
                             submitBtn.click();
                             resolve("SUCCESS");
                         } else if (attempts >= maxAttempts) {
-                            clearInterval(interval);
+                            clearInterval(state.submitInterval);
                             resolve("SUBMIT_BTN_NOT_USABLE_OR_TIMEOUT");
                         }
                     }, 100);

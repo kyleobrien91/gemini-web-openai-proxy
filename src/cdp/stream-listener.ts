@@ -25,7 +25,7 @@ export class StreamListener {
   }
 
   // Setup returns a handle. Setup must be awaited before submitting the prompt.
-  async setup(onToken: (token: string) => void, signal?: AbortSignal): Promise<StreamListenerHandle> {
+  async setup(turnId: string, onToken: (token: string) => void, signal?: AbortSignal): Promise<StreamListenerHandle> {
     let bindingHandler: ((event: any) => void) | undefined;
     let onDisconnect: (() => void) | undefined;
     let onAbort: (() => void) | undefined;
@@ -42,15 +42,21 @@ export class StreamListener {
         if (onDisconnect) this.cdp.offDisconnect(onDisconnect);
         if (signal && onAbort) signal.removeEventListener('abort', onAbort);
 
+        // Scope all browser-side variables to the specific turnId
         const cleanupScript = `
-           if (window.__proxyObserver) {
-               window.__proxyObserver.disconnect();
+           const state = window['__proxyTurn_${turnId}'];
+           if (state) {
+               state.aborted = true;
+               if (state.observer) {
+                   state.observer.disconnect();
+               }
+               if (state.checkDone) {
+                   clearInterval(state.checkDone);
+               }
+               if (state.submitInterval) {
+                   clearInterval(state.submitInterval);
+               }
            }
-           if (window.__proxyCheckDone) {
-               clearInterval(window.__proxyCheckDone);
-           }
-           window.__proxyObserverStarted = false;
-           window.__proxyAbort = true; // Signal submission script to abort if waiting
         `;
 
         try {
@@ -85,6 +91,9 @@ export class StreamListener {
           this.cdp.onDisconnect(onDisconnect);
 
           bindingHandler = (event: any) => {
+            // We verify the payload or event is bound to this turn if possible,
+            // but since we only have one active turn due to mutex,
+            // the bindings will respond to the active execution loop.
             if (event.name === 'proxyEmitToken') {
               onToken(event.payload);
             } else if (event.name === 'proxyEmitError') {
@@ -100,16 +109,23 @@ export class StreamListener {
         // Inject the observer now, so we are guaranteed it is active BEFORE this setup resolves
         const script = `
             (function() {
-                if (window.__proxyObserverStarted) return;
-                window.__proxyObserverStarted = true;
-                window.__proxyAbort = false;
+                // Initialize turn-specific state
+                window['__proxyTurn_${turnId}'] = {
+                    aborted: false,
+                    observer: null,
+                    checkDone: null,
+                    submitInterval: null
+                };
+                const state = window['__proxyTurn_${turnId}'];
 
                 const SELECTOR = '.model-response-text, model-response, .response-container-content, message-content';
                 const initialCount = document.querySelectorAll(SELECTOR).length;
                 let lastText = "";
                 let generatingElement = null;
 
-                window.__proxyObserver = new MutationObserver(() => {
+                state.observer = new MutationObserver(() => {
+                    if (state.aborted) return;
+
                     if (!generatingElement) {
                         const elements = document.querySelectorAll(SELECTOR);
                         if (elements.length > initialCount) {
@@ -127,27 +143,30 @@ export class StreamListener {
                                  window.proxyEmitToken(diff);
                             } else {
                                  // DOM rerender shifted text completely. Fail the stream to prevent corruption.
-                                 window.__proxyObserver.disconnect();
-                                 window.__proxyObserverStarted = false;
+                                 state.observer.disconnect();
                                  window.proxyEmitError("DOM rewrite detected; stream discontinuity. The UI modified already-emitted text prefix.");
                             }
                         }
                     }
                 });
-                window.__proxyObserver.observe(document.body, { childList: true, subtree: true, characterData: true });
+                state.observer.observe(document.body, { childList: true, subtree: true, characterData: true });
 
                 let stableCount = 0;
-                window.__proxyCheckDone = setInterval(() => {
+                state.checkDone = setInterval(() => {
+                    if (state.aborted) {
+                         clearInterval(state.checkDone);
+                         return;
+                    }
+
                     if (!generatingElement) return;
 
                     const sendBtn = document.querySelector('button[aria-label="Send prompt"], button.send-button-container');
 
-                    if (sendBtn && !sendBtn.disabled && lastText.length > 0) {
+                    if (sendBtn && !sendBtn.disabled && sendBtn.getAttribute('aria-disabled') !== 'true' && lastText.length > 0) {
                          stableCount++;
                          if (stableCount >= 2) {
-                             clearInterval(window.__proxyCheckDone);
-                             window.__proxyObserver.disconnect();
-                             window.__proxyObserverStarted = false;
+                             clearInterval(state.checkDone);
+                             state.observer.disconnect();
                              window.proxyEmitComplete("done");
                          }
                     } else {

@@ -134,11 +134,12 @@ router.post('/v1/chat/completions', async (req, res) => {
             }
           });
 
+          const turnId = uuidv4().replace(/-/g, '');
           // Submit prompt to live browser
           if (signal.aborted) throw new Error("Request cancelled or timed out");
 
           // Submit ensures stream listener is correctly started and awaited
-          const handle = await browserWorker.submitPrompt(currentPrompt, model, (token) => {
+          const handle = await browserWorker.submitPrompt(turnId, currentPrompt, model, (token) => {
               lexer.processChunk(token);
           }, signal, isRetry);
 
@@ -149,9 +150,17 @@ router.post('/v1/chat/completions', async (req, res) => {
 
           // Await stream listener completion safely
           try {
-              if (handle?.waitForCompletion) await handle.waitForCompletion();
+              if (handle?.waitForCompletion) {
+                  await handle.waitForCompletion();
+              }
           } finally {
-              if (handle?.cleanup) await handle.cleanup();
+              if (handle?.cleanup) {
+                  await handle.cleanup();
+              }
+          }
+
+          if (signal.aborted && process.env.NODE_ENV !== 'test') {
+              throw new Error("Request cancelled or timed out");
           }
 
           lexer.finish();
@@ -179,6 +188,8 @@ router.post('/v1/chat/completions', async (req, res) => {
             if (signal.aborted && process.env.NODE_ENV !== 'test') throw new Error("Request cancelled or timed out");
 
             turnResult = await executeTurn(initialPrompt, isRetry, request.tools);
+
+            if (signal.aborted && process.env.NODE_ENV !== 'test') throw new Error("Request cancelled or timed out");
 
             // Only retry in non-streaming mode to prevent SSE chunk corruption
             if (turnResult.reflectionReason && retries < config.maxRetries && !isStream) {
