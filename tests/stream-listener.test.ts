@@ -43,4 +43,19 @@ describe('StreamListener Transactional Setup', () => {
             expression: expect.stringContaining('window.__proxyObserverStarted = false;')
         }));
     });
+
+    it('should propagate unrelated Runtime.addBinding errors', async () => {
+        const cdp = new CDPConnection();
+        (cdp as any).ws = { readyState: 1, send: vi.fn(), on: vi.fn(), close: vi.fn() };
+
+        vi.spyOn(cdp, 'send').mockImplementation(async (method: string) => {
+             if (method === 'Runtime.addBinding') {
+                 throw new Error("Target closed");
+             }
+             return;
+        });
+
+        const listener = new StreamListener(cdp);
+        await expect(listener.setup(vi.fn())).rejects.toThrow("Target closed");
+    });
 });

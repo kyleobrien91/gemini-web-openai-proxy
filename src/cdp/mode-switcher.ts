@@ -33,6 +33,7 @@ export class ModeSwitcher {
 
   // Exposed purely for unit testing the verification logic without needing a full CDP mock stack
   public static verifyLabelMatch(selectedText: string, allowedLabels: string[]): boolean {
+       if (!selectedText || selectedText.trim() === "") return false;
        return allowedLabels.some(label => selectedText === label);
   }
 
