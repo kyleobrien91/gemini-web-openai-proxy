@@ -76,6 +76,8 @@ Develop a local, high-performance, TypeScript-based reverse proxy that presents 
 #### 4.1.1 `GET /v1/models`
 Returns list of available models to satisfy client initialization, UI selectors, and validation in OpenAI-compatible frontends (OpenCode, Cline, LibreChat).
 
+These models map directly to the **real options available in the web interface UI selectors** (e.g. Gemini Web's `bard-mode-menu-button` and Claude Web options):
+
 - **Request:** `GET /v1/models`
 - **Response (200 OK):**
 ```json
@@ -86,90 +88,119 @@ Returns list of available models to satisfy client initialization, UI selectors,
       "id": "gemini-3.7-flash",
       "object": "model",
       "created": 1740000000,
-      "owned_by": "google",
+      "owned_by": "google-web",
       "permission": [],
       "root": "gemini-3.7-flash",
-      "parent": null
+      "parent": null,
+      "metadata": {
+        "web_label": "3.7 Flash (All-around help)",
+        "web_dom_testid": "bard-mode-option-56fdd199312815e2"
+      }
     },
     {
-      "id": "gemini-3.5-flash",
+      "id": "gemini-3.7-flash-thinking",
       "object": "model",
       "created": 1740000000,
-      "owned_by": "google",
+      "owned_by": "google-web",
       "permission": [],
-      "root": "gemini-3.5-flash",
-      "parent": null
+      "root": "gemini-3.7-flash-thinking",
+      "parent": null,
+      "metadata": {
+        "web_label": "3.7 Flash + Extended thinking (Complex problem solving)",
+        "thinking": true
+      }
     },
     {
-      "id": "gemini-3.1-flash-lite",
+      "id": "gemini-3.5-flash-lite",
       "object": "model",
       "created": 1740000000,
-      "owned_by": "google",
+      "owned_by": "google-web",
       "permission": [],
-      "root": "gemini-3.1-flash-lite",
-      "parent": null
+      "root": "gemini-3.5-flash-lite",
+      "parent": null,
+      "metadata": {
+        "web_label": "3.5 Flash-Lite (Fastest answers)",
+        "web_dom_testid": "bard-mode-option-8c46e95b1a07cecc"
+      }
     },
     {
-      "id": "gemini-3.1-pro-preview",
+      "id": "gemini-3.1-pro",
       "object": "model",
       "created": 1740000000,
-      "owned_by": "google",
+      "owned_by": "google-web",
       "permission": [],
-      "root": "gemini-3.1-pro-preview",
-      "parent": null
+      "root": "gemini-3.1-pro",
+      "parent": null,
+      "metadata": {
+        "web_label": "3.1 Pro (Advanced reasoning)",
+        "web_dom_testid": "bard-mode-option-e6fa609c3fa255c0"
+      }
     },
     {
       "id": "gemini-2.5-pro",
       "object": "model",
       "created": 1740000000,
-      "owned_by": "google",
+      "owned_by": "google-web",
       "permission": [],
       "root": "gemini-2.5-pro",
-      "parent": null
+      "parent": null,
+      "metadata": {
+        "alias_for": "gemini-3.1-pro"
+      }
     },
     {
       "id": "gemini-2.5-flash",
       "object": "model",
       "created": 1740000000,
-      "owned_by": "google",
+      "owned_by": "google-web",
       "permission": [],
       "root": "gemini-2.5-flash",
+      "parent": null,
+      "metadata": {
+        "alias_for": "gemini-3.7-flash"
+      }
+    },
+    {
+      "id": "claude-3-7-sonnet",
+      "object": "model",
+      "created": 1740000000,
+      "owned_by": "anthropic-web",
+      "permission": [],
+      "root": "claude-3-7-sonnet",
+      "parent": null,
+      "metadata": {
+        "web_label": "Claude 3.7 Sonnet (claude.ai)"
+      }
+    },
+    {
+      "id": "claude-3-7-sonnet-thinking",
+      "object": "model",
+      "created": 1740000000,
+      "owned_by": "anthropic-web",
+      "permission": [],
+      "root": "claude-3-7-sonnet-thinking",
+      "parent": null,
+      "metadata": {
+        "web_label": "Claude 3.7 Sonnet + Extended Thinking (claude.ai)",
+        "thinking": true
+      }
+    },
+    {
+      "id": "claude-3-5-sonnet",
+      "object": "model",
+      "created": 1740000000,
+      "owned_by": "anthropic-web",
+      "permission": [],
+      "root": "claude-3-5-sonnet",
       "parent": null
     },
     {
-      "id": "claude-3-7-sonnet-latest",
+      "id": "claude-3-5-haiku",
       "object": "model",
       "created": 1740000000,
-      "owned_by": "anthropic",
+      "owned_by": "anthropic-web",
       "permission": [],
-      "root": "claude-3-7-sonnet-latest",
-      "parent": null
-    },
-    {
-      "id": "claude-sonnet-4.6",
-      "object": "model",
-      "created": 1740000000,
-      "owned_by": "anthropic",
-      "permission": [],
-      "root": "claude-sonnet-4.6",
-      "parent": null
-    },
-    {
-      "id": "claude-opus-4.8",
-      "object": "model",
-      "created": 1740000000,
-      "owned_by": "anthropic",
-      "permission": [],
-      "root": "claude-opus-4.8",
-      "parent": null
-    },
-    {
-      "id": "claude-haiku-4.5",
-      "object": "model",
-      "created": 1740000000,
-      "owned_by": "anthropic",
-      "permission": [],
-      "root": "claude-haiku-4.5",
+      "root": "claude-3-5-haiku",
       "parent": null
     }
   ]
