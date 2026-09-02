@@ -2,6 +2,13 @@ import { v4 as uuidv4 } from 'uuid';
 import { fuzzyTagRepair, stripMarkdown, tryParseJSON } from './auto-repair.js';
 import { Tool } from '../types/openai.js';
 
+// @ts-ignore
+import AjvModule from 'ajv';
+// @ts-ignore
+const Ajv = AjvModule.default || AjvModule;
+
+const ajv = new Ajv({ strict: false, coerceTypes: true });
+
 export interface LexerOptions {
   allowedTools?: Tool[];
   onContent: (content: string) => void;
@@ -76,28 +83,6 @@ export class StreamLexer {
     flushText();
   }
 
-  private validateSchema(args: any, schema: any): string | null {
-      if (!schema || !schema.properties) return null; // No strict schema defined
-
-      for (const [key, prop] of Object.entries(schema.properties)) {
-          const type = (prop as any).type;
-          const val = args[key];
-
-          if (schema.required && schema.required.includes(key) && val === undefined) {
-              return `Missing required argument: '${key}'.`;
-          }
-
-          if (val !== undefined && type) {
-              if (type === 'string' && typeof val !== 'string') return `Argument '${key}' must be a string.`;
-              if (type === 'number' && typeof val !== 'number') return `Argument '${key}' must be a number.`;
-              if (type === 'boolean' && typeof val !== 'boolean') return `Argument '${key}' must be a boolean.`;
-              if (type === 'array' && !Array.isArray(val)) return `Argument '${key}' must be an array.`;
-              if (type === 'object' && (typeof val !== 'object' || Array.isArray(val) || val === null)) return `Argument '${key}' must be an object.`;
-          }
-      }
-      return null;
-  }
-
   private processBufferedToolCall() {
     let contentToParse = this.buffer;
     contentToParse = fuzzyTagRepair(contentToParse);
@@ -143,12 +128,24 @@ export class StreamLexer {
            return;
       }
 
-      // Strict Validation: JSON Schema structure
+      // Real JSON Schema Validation via AJV
       if (matchedTool?.function?.parameters) {
-          const schemaError = this.validateSchema(parsed.arguments || {}, matchedTool.function.parameters);
-          if (schemaError) {
+          try {
+              const validate = ajv.compile(matchedTool.function.parameters);
+              const valid = validate(parsed.arguments || {});
+              if (!valid) {
+                  const errorMsg = ajv.errorsText(validate.errors);
+                  if (this.options.onPushbackRequest) {
+                       this.options.onPushbackRequest(`Schema validation failed for tool '${parsed.name}': ${errorMsg}`);
+                  }
+                  return;
+              }
+          } catch (e: any) {
+              console.error("AJV compilation/validation error:", e);
+              // If the client gave us a totally malformed JSON schema that AJV can't compile,
+              // we can't validate it properly, but we should err on the side of caution.
               if (this.options.onPushbackRequest) {
-                   this.options.onPushbackRequest(`Schema validation failed for tool '${parsed.name}': ${schemaError}`);
+                   this.options.onPushbackRequest(`Internal schema compilation failed for tool '${parsed.name}'. Check tool schema.`);
               }
               return;
           }

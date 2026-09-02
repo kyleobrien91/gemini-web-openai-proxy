@@ -61,4 +61,21 @@ describe('Normalizer', () => {
     expect(output).toContain('### Current Instruction:');
     expect(output).toContain('[User]:\nNow do task B');
   });
+
+  it('should avoid double-encoding JSON arguments', () => {
+     const req: ChatCompletionRequest = {
+      model: 'test',
+      messages: [
+        { role: 'user', content: 'Do task A' },
+        { role: 'assistant', content: 'Ok', tool_calls: [{ function: { name: 'tool_a', arguments: '{"path":"foo.txt"}' } }] },
+        { role: 'tool', name: 'tool_a', tool_call_id: 'call_123', content: 'Result A' },
+        { role: 'user', content: 'Now do task B' }
+      ]
+    };
+
+    const output = normalizeMessages(req);
+    // It should contain the raw object in the stringified wrapper, not escaped slashes: {\"path\":\"foo.txt\"}
+    expect(output).toContain('{"name":"tool_a","arguments":{"path":"foo.txt"}}');
+    expect(output).not.toContain('{\\"path\\":\\"foo.txt\\"}');
+  });
 });

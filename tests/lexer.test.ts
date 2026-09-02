@@ -87,4 +87,42 @@ describe('StreamLexer', () => {
       expect(onToolCallStart).toHaveBeenCalledWith(0, expect.any(String), 'tool1');
       expect(onToolCallStart).toHaveBeenCalledWith(1, expect.any(String), 'tool2');
   });
+
+  it('should validate AJV JSON Schema', () => {
+      const onPushbackRequest = vi.fn();
+      const onToolCallStart = vi.fn();
+
+      const lexer = new StreamLexer({
+        allowedTools: [
+            {
+                type: "function",
+                function: {
+                    name: "typed_tool",
+                    parameters: {
+                        type: "object",
+                        properties: {
+                            num: { type: "number" },
+                            str: { type: "string" },
+                            arr: { type: "array" },
+                            bool: { type: "boolean" },
+                        },
+                        required: ["num", "str"]
+                    }
+                }
+            }
+        ],
+        onContent: vi.fn(),
+        onToolCallStart,
+        onToolCallArg: vi.fn(),
+        onToolCallEnd: vi.fn(),
+        onFinished: vi.fn(),
+        onPushbackRequest
+      });
+
+      lexer.processChunk('<tool_call>{"name": "typed_tool", "arguments": {"num": "not_a_number", "str": "hello"}}</tool_call>');
+      lexer.finish();
+
+      expect(onToolCallStart).not.toHaveBeenCalled();
+      expect(onPushbackRequest).toHaveBeenCalled();
+  });
 });

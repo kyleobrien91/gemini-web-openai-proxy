@@ -22,6 +22,7 @@
   },
   "homepage": "https://github.com/kyleobrien91/gemini-web-openai-proxy#readme",
   "dependencies": {
+    "ajv": "^8.20.0",
     "cors": "^2.8.6",
     "dotenv": "^17.4.2",
     "express": "^5.2.1",

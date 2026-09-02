@@ -1,5 +1,6 @@
 import { ChatCompletionRequest } from '../types/openai.js';
 import { injectToolSchemas } from './tool-injector.js';
+import { tryParseJSON } from '../lexer/auto-repair.js';
 
 export function normalizeMessages(request: ChatCompletionRequest): string {
   const { messages, tools } = request;
@@ -37,7 +38,16 @@ export function normalizeMessages(request: ChatCompletionRequest): string {
             if (msg.tool_calls) {
                 for (const toolCall of msg.tool_calls) {
                     if (toolCall.function) {
-                        flattenedPrompt += `<tool_call>\n${JSON.stringify({name: toolCall.function.name, arguments: toolCall.function.arguments})}\n</tool_call>\n`;
+                        let parsedArgs = toolCall.function.arguments;
+                        // Prevent double JSON encoding
+                        if (typeof parsedArgs === 'string') {
+                             const parsed = tryParseJSON(parsedArgs);
+                             if (parsed) {
+                                 parsedArgs = parsed;
+                             }
+                        }
+
+                        flattenedPrompt += `<tool_call>\n${JSON.stringify({name: toolCall.function.name, arguments: parsedArgs})}\n</tool_call>\n`;
                     }
                 }
             }

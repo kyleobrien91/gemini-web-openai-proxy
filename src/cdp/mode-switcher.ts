@@ -11,13 +11,22 @@ export class ModeSwitcher {
     'gemini-2.5-flash': 'bard-mode-option-56fdd199312815e2' // Alias mapping
   };
 
+  private modeNameMapping: Record<string, string[]> = {
+      'gemini-3.7-flash': ['3.7 flash', 'gemini 1.5 flash', 'flash'], // Fallbacks depending on ui a/b testing
+      'gemini-3.1-pro': ['3.1 pro', 'gemini 1.5 pro', 'gemini advanced'],
+      'gemini-3.5-flash-lite': ['3.5 flash-lite', 'flash-lite'],
+      'gemini-2.5-pro': ['3.1 pro', 'gemini 1.5 pro', 'gemini advanced'],
+      'gemini-2.5-flash': ['3.7 flash', 'gemini 1.5 flash', 'flash'],
+  };
+
   constructor(cdp: CDPConnection) {
     this.cdp = cdp;
   }
 
   async switchMode(modelName: string): Promise<void> {
     const testId = this.modeMapping[modelName];
-    if (!testId) {
+    const expectedKeywords = this.modeNameMapping[modelName];
+    if (!testId || !expectedKeywords) {
       throw new Error(`Unknown model: ${modelName}. Supported models are 3.7-flash, 3.1-pro, 3.5-flash-lite.`);
     }
 
@@ -30,16 +39,22 @@ export class ModeSwitcher {
            const optionBtn = document.querySelector('[data-test-id="${testId}"]');
            if (optionBtn) {
                optionBtn.click();
-               // Wait a moment for UI to update
+               // Wait for the UI state to settle
                await new Promise(r => setTimeout(r, 500));
 
-               // Verification logic. In Gemini Web, selected item typically has an aria-checked or aria-selected attribute
-               // We fallback to just checking if the menu button text contains part of the model name or if we clicked successfully.
-               // Since we don't have the exact selected DOM structure guaranteed, if we found and clicked it, we assume success.
-               return true;
+               // Verification logic: We read the text content of the menu button which indicates the currently selected model
+               const finalBtn = document.querySelector('button[data-test-id="bard-mode-menu-button"]');
+               const selectedText = (finalBtn ? finalBtn.textContent || "" : "").toLowerCase();
+
+               const keywords = ${JSON.stringify(expectedKeywords)};
+               // Allow partial match on expected keywords
+               const verified = keywords.some(k => selectedText.includes(k));
+
+               if (verified) return "SUCCESS";
+               return "VERIFICATION_FAILED: " + selectedText;
            }
         }
-        return false;
+        return "ELEMENT_NOT_FOUND";
       })();
     `;
 
@@ -50,8 +65,16 @@ export class ModeSwitcher {
         returnByValue: true
       });
 
-      if (res && res.value === false) {
-          throw new Error(`Failed to locate model option for ${modelName} in the UI. Ensure your account has access to this model.`);
+      if (res && res.value) {
+          if (res.value === "ELEMENT_NOT_FOUND") {
+               throw new Error(`Failed to locate model option for ${modelName} in the UI. Ensure your account has access to this model.`);
+          }
+          if (res.value.startsWith("VERIFICATION_FAILED")) {
+               throw new Error(`Model switch verification failed. Expected to switch to ${modelName}, but UI indicates currently selected model is: ${res.value}`);
+          }
+          // Success!
+      } else {
+          throw new Error(`Unexpected failure executing mode switch script.`);
       }
 
     } catch (e) {
