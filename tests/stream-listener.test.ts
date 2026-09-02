@@ -8,15 +8,21 @@ describe('StreamListener Transactional Setup', () => {
         // Mock connection state
         (cdp as any).ws = { readyState: 1, send: vi.fn(), on: vi.fn(), close: vi.fn() };
 
-        const offSpy = vi.spyOn(cdp, 'off');
-        const offDisconnectSpy = vi.spyOn(cdp, 'offDisconnect');
+        let bindingsCount = 0;
         const sendSpy = vi.spyOn(cdp, 'send').mockImplementation(async (method: string) => {
-             if (method === 'Runtime.addBinding') return; // Pass first few calls
+             if (method === 'Runtime.addBinding') {
+                 bindingsCount++;
+                 return; // Allow bindings to succeed
+             }
              if (method === 'Runtime.evaluate') {
-                 // Throw on the final injection step
+                 // Throw on the final script evaluation step
                  throw new Error("Simulated injection failure");
              }
+             return;
         });
+
+        const offSpy = vi.spyOn(cdp, 'off');
+        const offDisconnectSpy = vi.spyOn(cdp, 'offDisconnect');
 
         const listener = new StreamListener(cdp);
         const controller = new AbortController();
@@ -24,12 +30,15 @@ describe('StreamListener Transactional Setup', () => {
 
         await expect(listener.setup(vi.fn(), controller.signal)).rejects.toThrow("Simulated injection failure");
 
-        // Assert rollback happened
+        // Assert bindings were actually called before failure
+        expect(bindingsCount).toBeGreaterThan(0);
+
+        // Assert rollback cleanup occurred
         expect(offSpy).toHaveBeenCalledWith('Runtime.bindingCalled', expect.any(Function));
-        expect(offDisconnectSpy).toHaveBeenCalled();
+        expect(offDisconnectSpy).toHaveBeenCalledWith(expect.any(Function));
         expect(removeListenerSpy).toHaveBeenCalledWith('abort', expect.any(Function));
 
-        // Assert cleanup script was sent
+        // Assert cleanup JS script was evaluated as part of rollback
         expect(sendSpy).toHaveBeenCalledWith('Runtime.evaluate', expect.objectContaining({
             expression: expect.stringContaining('window.__proxyObserverStarted = false;')
         }));

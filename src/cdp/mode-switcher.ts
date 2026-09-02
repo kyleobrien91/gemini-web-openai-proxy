@@ -31,6 +31,11 @@ export class ModeSwitcher {
     this.cdp = cdp;
   }
 
+  // Exposed purely for unit testing the verification logic without needing a full CDP mock stack
+  public static verifyLabelMatch(selectedText: string, allowedLabels: string[]): boolean {
+       return allowedLabels.some(label => selectedText === label);
+  }
+
   async switchMode(modelName: string): Promise<void> {
     const testId = this.modeMapping[modelName];
     const expectedLabels = this.exactModeLabels[modelName];
