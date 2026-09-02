@@ -74,7 +74,8 @@ Develop a local, high-performance, TypeScript-based reverse proxy that presents 
 ### 4.1 Endpoints Specification
 
 #### 4.1.1 `GET /v1/models`
-Returns list of available models to satisfy client initialization and validation.
+Returns list of available models to satisfy client initialization, UI selectors, and validation in OpenAI-compatible frontends (OpenCode, Cline, LibreChat).
+
 - **Request:** `GET /v1/models`
 - **Response (200 OK):**
 ```json
@@ -82,10 +83,46 @@ Returns list of available models to satisfy client initialization and validation
   "object": "list",
   "data": [
     {
+      "id": "gemini-3.7-flash",
+      "object": "model",
+      "created": 1740000000,
+      "owned_by": "google",
+      "permission": [],
+      "root": "gemini-3.7-flash",
+      "parent": null
+    },
+    {
+      "id": "gemini-3.5-flash",
+      "object": "model",
+      "created": 1740000000,
+      "owned_by": "google",
+      "permission": [],
+      "root": "gemini-3.5-flash",
+      "parent": null
+    },
+    {
+      "id": "gemini-3.1-flash-lite",
+      "object": "model",
+      "created": 1740000000,
+      "owned_by": "google",
+      "permission": [],
+      "root": "gemini-3.1-flash-lite",
+      "parent": null
+    },
+    {
+      "id": "gemini-3.1-pro-preview",
+      "object": "model",
+      "created": 1740000000,
+      "owned_by": "google",
+      "permission": [],
+      "root": "gemini-3.1-pro-preview",
+      "parent": null
+    },
+    {
       "id": "gemini-2.5-pro",
       "object": "model",
       "created": 1740000000,
-      "owned_by": "gemini-web-proxy",
+      "owned_by": "google",
       "permission": [],
       "root": "gemini-2.5-pro",
       "parent": null
@@ -94,9 +131,45 @@ Returns list of available models to satisfy client initialization and validation
       "id": "gemini-2.5-flash",
       "object": "model",
       "created": 1740000000,
-      "owned_by": "gemini-web-proxy",
+      "owned_by": "google",
       "permission": [],
       "root": "gemini-2.5-flash",
+      "parent": null
+    },
+    {
+      "id": "claude-3-7-sonnet-latest",
+      "object": "model",
+      "created": 1740000000,
+      "owned_by": "anthropic",
+      "permission": [],
+      "root": "claude-3-7-sonnet-latest",
+      "parent": null
+    },
+    {
+      "id": "claude-sonnet-4.6",
+      "object": "model",
+      "created": 1740000000,
+      "owned_by": "anthropic",
+      "permission": [],
+      "root": "claude-sonnet-4.6",
+      "parent": null
+    },
+    {
+      "id": "claude-opus-4.8",
+      "object": "model",
+      "created": 1740000000,
+      "owned_by": "anthropic",
+      "permission": [],
+      "root": "claude-opus-4.8",
+      "parent": null
+    },
+    {
+      "id": "claude-haiku-4.5",
+      "object": "model",
+      "created": 1740000000,
+      "owned_by": "anthropic",
+      "permission": [],
+      "root": "claude-haiku-4.5",
       "parent": null
     }
   ]
