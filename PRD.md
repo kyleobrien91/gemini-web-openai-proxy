@@ -329,17 +329,84 @@ OpenCode (and modern agentic harnesses like Cline / Roo Code) enforce strict val
 
 ---
 
-### 4.4 CDP Driver & Browser Worker Management
+---
 
-#### 4.4.1 Connection & Session Strategy
+### 4.5 Self-Healing Formatting & Non-Compliance Engine (Two-Tier Recovery)
+
+Web interface models occasionally deviate from formatting instructions (e.g. wrapping tool calls in markdown blocks like ````json ... ```` instead of `<tool_call>`, emitting malformed JSON, printing raw markdown code blocks when a file write tool was expected, or hallucinating pseudocode instead of invoking defined tools). 
+
+To ensure OpenCode never crashes or receives broken payloads, the proxy implements a **Two-Tier Self-Healing Engine**:
+
+```
+                              ┌────────────────────────────────────────┐
+                              │     Raw Model Output from Gemini       │
+                              └───────────────────┬────────────────────┘
+                                                  │
+                                                  ▼
+                              ┌────────────────────────────────────────┐
+                              │  Tier 1: Fast Heuristic Auto-Repair    │
+                              │  - Fuzzy XML tag normalization         │
+                              │  - JSON partial / unescaped repair     │
+                              │  - Markdown block -> tool conversion   │
+                              └───────────────────┬────────────────────┘
+                                                  │
+                                 ┌────────────────┴────────────────┐
+                                 │ Valid Output or Repaired Tool?  │
+                                 └────────────────┬────────────────┘
+                                                  │
+                              YES                 │                 NO (Severe Non-Compliance)
+                               ▼                  │                              ▼
+                  ┌──────────────────────┐        │               ┌──────────────────────────────┐
+                  │ Stream to OpenCode   │        │               │ Tier 2: Reflection Pushback  │
+                  │ (Standard SSE Chunks)│        │               │ - Auto-reply in same thread: │
+                  └──────────────────────┘        │               │   "Error: Invalid format..." │
+                                                  │               │ - Demand strict compliance   │
+                                                  │               │ - Max 2 automatic retries    │
+                                                  │               └──────────────┬───────────────┘
+                                                  │                              │
+                                                  └──────────────────────────────┘
+```
+
+#### 4.5.1 Tier 1: Local Heuristic Auto-Repair (Zero-Latency)
+Before resorting to re-prompting the model, the proxy attempts instant local parsing and syntactic correction:
+1. **Markdown & Code-Block Stripping:** If the model outputs ````json {"name": "write_to_file", ...} ```` or ````xml <tool_call>... ````, the regex normalizer extracts the inner payload and wraps it as a valid `<tool_call>`.
+2. **Fuzzy XML & Tag Repair:** Handles variations such as `<tool-call>`, `<tool>`, `<function_call>`, `<tool_call name="...">`, or unclosed trailing `</tool_call>` tags.
+3. **Partial / Relaxed JSON Parsing:** If arguments contain unescaped internal double quotes (e.g. bash commands with quotes) or trailing commas, the proxy runs a relaxed JSON parser (JSON5 / regex boundary extraction) to extract valid key-value arguments.
+4. **Direct File Block Translation:** If OpenCode requested tool calling but the model instead directly printed a markdown code block titled with a file path (e.g. ````python file="src/main.py" ... ````), the parser auto-converts this block into a synthetic `write_to_file` tool call.
+
+#### 4.5.2 Tier 2: Automated Reflection Retry & Model Pushback
+If Tier 1 cannot recover a valid tool call or if the model violates critical structure (e.g. hallucinating tool names not present in `tools` schema, or failing to answer required parameters), the proxy engages an **automated inline reflection loop** within the same browser chat session:
+
+1. **Immediate Pushback Turn:**
+   The proxy automatically injects a corrective user prompt into the active Gemini conversation thread without exposing the error to OpenCode:
+   ```text
+   [SYSTEM CORRECTION]:
+   Your previous response violated the mandatory tool calling format.
+   Reason: The JSON inside <tool_call> was malformed or missing the required "command" argument.
+   
+   You MUST immediately re-output your response strictly using:
+   <tool_call>
+   {"name": "exact_tool_name", "arguments": { ... }}
+   </tool_call>
+   Do not add commentary, output only the valid tool call.
+   ```
+2. **Retry Cap:** Maximum of **2 reflection retries** per turn.
+3. **Graceful Fallback:** If the model fails after 2 attempts, the proxy wraps the output as a regular assistant text response with `finish_reason: "stop"` so OpenCode receives the raw text safely and can ask the user for clarification rather than crashing.
+
+---
+
+### 4.6 CDP Driver & Browser Worker Management
+
+#### 4.6.1 Connection & Session Strategy
 - **Port:** `http://127.0.0.1:9222`
 - **Driver Layer:** Native Node.js WebSocket client communicating directly with Chrome DevTools Protocol (`Network`, `Page`, `Runtime`, `Fetch`).
 - **Tab Worker Pool:**
   - Maintains a dedicated, isolated tab (`https://gemini.google.com/app`) for incoming proxy requests.
   - Clears context between distinct completions by executing `window.location.href = 'https://gemini.google.com/app'` or clicking "New Chat" via DOM automation.
 - **Model Mode Switching:**
-  - If request specifies `model: "gemini-2.5-pro"`, verify/click the Gemini UI model dropdown selector to activate Pro mode before prompt submission.
-  - If `model: "gemini-2.5-flash"`, switch to Flash mode.
+  - If request specifies `model: "gemini-3.1-pro"`, verify/click the Gemini UI model dropdown selector to activate Pro mode (`bard-mode-option-e6fa609c3fa255c0`) before prompt submission.
+  - If `model: "gemini-3.7-flash"`, switch to Flash mode (`bard-mode-option-56fdd199312815e2`).
+  - If `model: "gemini-3.5-flash-lite"`, switch to Flash-Lite mode (`bard-mode-option-8c46e95b1a07cecc`).
 
 ---
 
