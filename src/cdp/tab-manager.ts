@@ -43,8 +43,10 @@ export class TabManager {
 
          const processLifecycleEvent = (event: any) => {
              // We only care about events matching the exact navigation we just initiated
-             if (event.loaderId !== expectedLoaderId) return;
-             if (event.frameId !== expectedFrameId) return;
+             // If loaderId is missing from the navigation response, it was a same-document navigation
+             // and we shouldn't enforce loaderId matching.
+             if (expectedLoaderId && event.loaderId !== expectedLoaderId) return;
+             if (expectedFrameId && event.frameId !== expectedFrameId) return;
 
              if (event.name === 'load') {
                  cleanup();
@@ -72,6 +74,14 @@ export class TabManager {
                  cleanup();
                  return reject(new Error(`Page navigation failed: ${res.errorText}`));
              }
+
+             // Same-document navigation (e.g., hash change) might not return a loaderId.
+             // In that case, navigation is effectively instantaneous and we don't need to wait for a full load event.
+             if (!res.loaderId) {
+                 cleanup();
+                 return resolve();
+             }
+
              expectedLoaderId = res.loaderId;
              expectedFrameId = res.frameId;
              hasNavigated = true;
@@ -84,39 +94,39 @@ export class TabManager {
              cleanup();
              return reject(e);
          }
-     });
+     }).then(async () => {
+         // Give SPA a moment to render after load
+         await new Promise(r => setTimeout(r, 1000));
 
-     // Give SPA a moment to render after load
-     await new Promise(r => setTimeout(r, 1000));
+         // Force a "New Chat" click and explicitly VERIFY it succeeded by checking that
+         // the chat history (model-response-text) is cleared from the DOM.
+         const script = `
+           (async function() {
+              const newChatBtn = document.querySelector('button[aria-label="New chat"], a[href="/app"]');
+              if (newChatBtn) {
+                  newChatBtn.click();
+                  // Wait for the UI to clear out previous messages
+                  await new Promise(r => setTimeout(r, 1000));
 
-     // Force a "New Chat" click and explicitly VERIFY it succeeded by checking that
-     // the chat history (model-response-text) is cleared from the DOM.
-     const script = `
-       (async function() {
-          const newChatBtn = document.querySelector('button[aria-label="New chat"], a[href="/app"]');
-          if (newChatBtn) {
-              newChatBtn.click();
-              // Wait for the UI to clear out previous messages
-              await new Promise(r => setTimeout(r, 1000));
-
-              // Verify that the chat is actually fresh
-              const existingResponses = document.querySelectorAll('.model-response-text, model-response');
-              if (existingResponses.length === 0) {
-                  return "SUCCESS";
+                  // Verify that the chat is actually fresh
+                  const existingResponses = document.querySelectorAll('.model-response-text, model-response');
+                  if (existingResponses.length === 0) {
+                      return "SUCCESS";
+                  }
+                  return "VERIFICATION_FAILED_CHAT_NOT_EMPTY";
               }
-              return "VERIFICATION_FAILED_CHAT_NOT_EMPTY";
-          }
-          return "NEW_CHAT_BTN_NOT_FOUND";
-       })();
-     `;
-     const resetRes = await this.cdp.send('Runtime.evaluate', {
-         expression: script,
-         awaitPromise: true,
-         returnByValue: true
-     });
+              return "NEW_CHAT_BTN_NOT_FOUND";
+           })();
+         `;
+         const resetRes = await this.cdp.send('Runtime.evaluate', {
+             expression: script,
+             awaitPromise: true,
+             returnByValue: true
+         });
 
-     if (!resetRes || resetRes.value !== "SUCCESS") {
-         throw new Error(`Failed to initialize and verify a new conversation in Gemini UI: ${resetRes ? resetRes.value : 'unknown error'}`);
-     }
+         if (!resetRes || resetRes.value !== "SUCCESS") {
+             throw new Error(`Failed to initialize and verify a new conversation in Gemini UI: ${resetRes ? resetRes.value : 'unknown error'}`);
+         }
+     });
   }
 }

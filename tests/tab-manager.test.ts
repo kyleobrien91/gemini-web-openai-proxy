@@ -64,4 +64,41 @@ describe('TabManager Navigation Correlation', () => {
 
         vi.useRealTimers();
     });
+
+    it('should resolve immediately for same-document navigation without a loaderId', async () => {
+        vi.useFakeTimers({
+            toFake: ['setTimeout', 'clearTimeout']
+        });
+
+        const cdp = new CDPConnection();
+        (cdp as any).ws = { readyState: 1, send: vi.fn(), on: vi.fn(), close: vi.fn() };
+        (cdp as any).targetId = "target123";
+
+        vi.spyOn(cdp, 'on').mockImplementation(() => {});
+
+        const sendSpy = vi.spyOn(cdp, 'send').mockImplementation(async (method) => {
+            if (method === 'Page.navigate') {
+                // Return empty object simulating no loaderId generated
+                return { frameId: 'frame1' };
+            }
+            if (method === 'Runtime.evaluate') {
+                return { value: 'SUCCESS' };
+            }
+            return {};
+        });
+
+        const tabManager = new TabManager(cdp);
+
+        // Should resolve cleanly without needing a lifecycle event emitted
+        const resetPromise = tabManager.resetChatSession();
+
+        await Promise.resolve();
+        await Promise.resolve();
+        await Promise.resolve();
+
+        vi.runAllTimers();
+        await resetPromise;
+
+        vi.useRealTimers();
+    });
 });

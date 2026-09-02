@@ -92,22 +92,28 @@ export class StreamListener {
 
           bindingHandler = (event: any) => {
             if (event.name === 'proxyEmitToken' || event.name === 'proxyEmitError' || event.name === 'proxyEmitComplete') {
+                let parsedPayload: any;
                 try {
-                    const parsedPayload = JSON.parse(event.payload);
-                    // Discard payloads belonging to stale or future turns
-                    if (parsedPayload.turnId !== turnId) {
-                        return;
-                    }
-
-                    if (event.name === 'proxyEmitToken') {
-                      onToken(parsedPayload.payload);
-                    } else if (event.name === 'proxyEmitError') {
-                      rollback().then(() => reject(new Error(parsedPayload.payload)));
-                    } else if (event.name === 'proxyEmitComplete') {
-                      rollback().then(() => resolve());
-                    }
+                    parsedPayload = JSON.parse(event.payload);
                 } catch (e) {
-                    // If JSON parse fails, it wasn't formatted by our new bound emitter structure. Ignore.
+                    // Malformed payload detected. Since we use a Mutex, any binding payload emitted right now
+                    // belongs to the active run. If it's corrupted, we must terminate the generation
+                    // deterministically rather than hanging.
+                    rollback().then(() => reject(new Error("Corrupted binding payload received: " + event.payload)));
+                    return;
+                }
+
+                // Discard payloads belonging to stale or future turns
+                if (parsedPayload.turnId !== turnId) {
+                    return;
+                }
+
+                if (event.name === 'proxyEmitToken') {
+                  onToken(parsedPayload.payload);
+                } else if (event.name === 'proxyEmitError') {
+                  rollback().then(() => reject(new Error(parsedPayload.payload)));
+                } else if (event.name === 'proxyEmitComplete') {
+                  rollback().then(() => resolve());
                 }
             }
           };
