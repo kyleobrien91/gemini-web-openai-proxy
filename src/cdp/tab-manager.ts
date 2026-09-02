@@ -18,7 +18,12 @@ export class TabManager {
   async resetChatSession(): Promise<void> {
      // Navigation alone doesn't clear the Gemini UI state if it's an SPA routing.
      // We will first try to navigate, then ensure the UI has clicked "New chat" to guarantee a fresh slate.
-     return new Promise<void>(async (resolve, reject) => {
+
+     // 1. Enable lifecycle events BEFORE registering the listener or promise
+     // We await this natively so failures propagate cleanly to the caller without hanging.
+     await this.cdp.send('Page.setLifecycleEventsEnabled', { enabled: true });
+
+     await new Promise<void>(async (resolve, reject) => {
          let timeoutId: NodeJS.Timeout;
          let expectedLoaderId: string | null = null;
          let expectedFrameId: string | null = null;
@@ -42,13 +47,6 @@ export class TabManager {
              this.cdp.off('Page.lifecycleEvent', lifecycleHandler);
          };
 
-         // 1. Enable lifecycle events and register listener BEFORE navigation
-         try {
-             await this.cdp.send('Page.setLifecycleEventsEnabled', { enabled: true });
-         } catch (e) {
-             console.warn("Failed to enable Page lifecycle events", e);
-         }
-
          this.cdp.on('Page.lifecycleEvent', lifecycleHandler);
 
          // Setup timeout
@@ -70,21 +68,39 @@ export class TabManager {
              cleanup();
              return reject(e);
          }
-     }).then(async () => {
-         // Give SPA a moment to render after load
-         await new Promise(r => setTimeout(r, 1000));
-
-         // Force a "New Chat" click just in case navigating to /app reloaded an active session state
-         const script = `
-           (async function() {
-              const newChatBtn = document.querySelector('button[aria-label="New chat"], a[href="/app"]');
-              if (newChatBtn) {
-                  newChatBtn.click();
-                  await new Promise(r => setTimeout(r, 500));
-              }
-           })();
-         `;
-         await this.cdp.send('Runtime.evaluate', { expression: script, awaitPromise: true }).catch(() => {});
      });
+
+     // Give SPA a moment to render after load
+     await new Promise(r => setTimeout(r, 1000));
+
+     // Force a "New Chat" click and explicitly VERIFY it succeeded by checking that
+     // the chat history (model-response-text) is cleared from the DOM.
+     const script = `
+       (async function() {
+          const newChatBtn = document.querySelector('button[aria-label="New chat"], a[href="/app"]');
+          if (newChatBtn) {
+              newChatBtn.click();
+              // Wait for the UI to clear out previous messages
+              await new Promise(r => setTimeout(r, 1000));
+
+              // Verify that the chat is actually fresh
+              const existingResponses = document.querySelectorAll('.model-response-text, model-response');
+              if (existingResponses.length === 0) {
+                  return "SUCCESS";
+              }
+              return "VERIFICATION_FAILED_CHAT_NOT_EMPTY";
+          }
+          return "NEW_CHAT_BTN_NOT_FOUND";
+       })();
+     `;
+     const resetRes = await this.cdp.send('Runtime.evaluate', {
+         expression: script,
+         awaitPromise: true,
+         returnByValue: true
+     });
+
+     if (!resetRes || resetRes.value !== "SUCCESS") {
+         throw new Error(`Failed to initialize and verify a new conversation in Gemini UI: ${resetRes ? resetRes.value : 'unknown error'}`);
+     }
   }
 }

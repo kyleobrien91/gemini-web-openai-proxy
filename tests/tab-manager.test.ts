@@ -24,6 +24,9 @@ describe('TabManager Navigation Correlation', () => {
             if (method === 'Page.navigate') {
                 return { loaderId: 'loader1', frameId: 'frame1' };
             }
+            if (method === 'Runtime.evaluate') {
+                return { value: 'SUCCESS' }; // Mock the "New chat" script execution
+            }
             return {};
         });
 

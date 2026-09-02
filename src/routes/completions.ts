@@ -60,8 +60,11 @@ router.post('/v1/chat/completions', async (req, res) => {
         if (timeoutId) clearTimeout(timeoutId);
     };
 
-    req.on('close', () => {
-       abortController.abort();
+    // Fix cancellation semantics: Abort only if the connection drops prematurely
+    res.on('close', () => {
+       if (!res.writableEnded) {
+           abortController.abort();
+       }
        cleanup();
     });
 
