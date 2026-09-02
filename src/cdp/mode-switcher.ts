@@ -7,7 +7,12 @@ export class ModeSwitcher {
     'gemini-3.7-flash': 'bard-mode-option-56fdd199312815e2',
     'gemini-3.1-pro': 'bard-mode-option-e6fa609c3fa255c0',
     'gemini-3.5-flash-lite': 'bard-mode-option-8c46e95b1a07cecc',
-    // Compatibility aliases for frontends hardcoding older modes
+
+    // BACKWARDS COMPATIBILITY ALIASES:
+    // Clients using generic older names like 2.5-pro or 2.5-flash will be mapped to the UI components
+    // for 3.1-pro and 3.7-flash respectively, because Google Web UI no longer reliably serves "2.5" labelled options.
+    // This allows seamless backward compatibility for older agents, but note that the actual underlying model
+    // servicing the request will be the newer 3.x series model selected in the UI.
     'gemini-2.5-pro': 'bard-mode-option-e6fa609c3fa255c0',
     'gemini-2.5-flash': 'bard-mode-option-56fdd199312815e2'
   };
@@ -16,7 +21,8 @@ export class ModeSwitcher {
       'gemini-3.7-flash': ['3.7 Flash', 'Gemini 1.5 Flash'],
       'gemini-3.1-pro': ['3.1 Pro', 'Gemini 1.5 Pro', 'Gemini Advanced'],
       'gemini-3.5-flash-lite': ['3.5 Flash-Lite'],
-      // Aliases map to the same expected visual labels of their target physical models
+
+      // Since these are aliases for the above models, they expect the EXACT same UI labels to be present.
       'gemini-2.5-pro': ['3.1 Pro', 'Gemini 1.5 Pro', 'Gemini Advanced'],
       'gemini-2.5-flash': ['3.7 Flash', 'Gemini 1.5 Flash'],
   };
@@ -49,12 +55,10 @@ export class ModeSwitcher {
 
                const allowedLabels = ${JSON.stringify(expectedLabels)};
 
-               // Authoritative check: We require an exact match against one of the known valid labels for this model.
-               // We do not allow partial substring matches (e.g. "Flash" matching "3.5 Flash-Lite" or "3.7 Flash").
-               const verified = allowedLabels.some(label => {
-                   // Clean up text in case of UI spans/icons rendering extra space
-                   return selectedText === label || selectedText.startsWith(label);
-               });
+               // AUTHORITATIVE VERIFICATION:
+               // The selected text must exactly match one of the known valid exact labels.
+               // We do NOT use generic substrings or startsWith.
+               const verified = allowedLabels.some(label => selectedText === label);
 
                if (verified) return "SUCCESS";
                return "VERIFICATION_FAILED: " + selectedText;
