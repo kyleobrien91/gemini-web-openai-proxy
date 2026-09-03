@@ -186,6 +186,11 @@ export class StreamLexer {
               // Process it
               this.processBufferedToolCall(fullToolCall);
 
+              if (this.state === ('FAILED' as any)) {
+                  this.buffer = '';
+                  return;
+              }
+
               // Reset buffer to whatever comes after the tool call
               this.buffer = this.buffer.substring(closeIndex + closeLength);
               this.state = 'TEXT'; // Back to text mode
@@ -284,6 +289,9 @@ export class StreamLexer {
       if (this.options.onPushbackRequest) {
           this.options.onPushbackRequest("The JSON inside <tool_call> was malformed or missing the required 'name' property.");
       }
+      this.state = 'FAILED';
+      this.buffer = '';
+      return;
     }
   }
 
