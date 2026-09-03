@@ -6,7 +6,7 @@ export class ModeSwitcher {
   private modeMapping: Record<string, string> = {
     'gemini-3.7-flash': 'bard-mode-option-56fdd199312815e2',
     'gemini-3.1-pro': 'bard-mode-option-e6fa609c3fa255c0',
-    'gemini-3.5-flash-lite': 'bard-mode-option-8c46e95b1a07cecc',
+    'gemini-3.5-flash-lite': 'bard-mode-option-cf41b0e0dd7d53e5', // Updated from 8c46e95b1a07cecc (3.1 Flash-Lite)
 
     // BACKWARDS COMPATIBILITY ALIASES:
     // Clients using generic older names like 2.5-pro or 2.5-flash will be mapped to the UI components

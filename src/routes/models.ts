@@ -27,7 +27,7 @@ const MODELS = [
     parent: null,
     metadata: {
       web_label: "3.5 Flash-Lite (Fastest answers)",
-      web_dom_testid: "bard-mode-option-8c46e95b1a07cecc"
+      web_dom_testid: "bard-mode-option-cf41b0e0dd7d53e5"
     }
   },
   {
