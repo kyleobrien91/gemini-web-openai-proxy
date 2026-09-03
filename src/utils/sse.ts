@@ -1,6 +1,6 @@
 import { ChatCompletionChunk } from '../types/openai.js';
 
-export function createContentChunk(id: string, model: string, text: string): ChatCompletionChunk {
+export function createContentChunk(id: string, model: string, text: string, isFirst: boolean = false): ChatCompletionChunk {
   return {
     id,
     object: 'chat.completion.chunk',
@@ -10,6 +10,7 @@ export function createContentChunk(id: string, model: string, text: string): Cha
       {
         index: 0,
         delta: {
+          role: isFirst ? 'assistant' : undefined,
           content: text,
         },
         finish_reason: null,
@@ -18,7 +19,7 @@ export function createContentChunk(id: string, model: string, text: string): Cha
   };
 }
 
-export function createToolHeaderChunk(id: string, model: string, index: number, toolId: string, toolName: string): ChatCompletionChunk {
+export function createToolHeaderChunk(id: string, model: string, index: number, toolId: string, toolName: string, isFirst: boolean = false): ChatCompletionChunk {
   return {
     id,
     object: 'chat.completion.chunk',
@@ -28,7 +29,7 @@ export function createToolHeaderChunk(id: string, model: string, index: number, 
       {
         index: 0,
         delta: {
-          role: 'assistant',
+          role: isFirst ? 'assistant' : undefined,
           tool_calls: [
             {
               index,

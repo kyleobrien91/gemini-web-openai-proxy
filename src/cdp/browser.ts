@@ -77,6 +77,11 @@ export class BrowserWorker {
 
                         if (isVisible && isEnabled) {
                             clearInterval(state.submitInterval);
+                            // Final safety check immediately before click
+                            if (state.aborted || !window.location.href.includes('gemini.google.com')) {
+                                resolve("ABORTED");
+                                return;
+                            }
                             submitBtn.click();
                             resolve("SUCCESS");
                         } else if (attempts >= maxAttempts) {

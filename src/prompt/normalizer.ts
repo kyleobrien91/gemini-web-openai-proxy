@@ -35,7 +35,8 @@ export function normalizeMessages(request: ChatCompletionRequest): string {
             if (msg.content) {
                 flattenedPrompt += `${msg.content}\n`;
             }
-            if (msg.tool_calls) {
+            if (msg.tool_calls && msg.tool_calls.length > 0) {
+                flattenedPrompt += `[Assistant Tool Calls]:\n`;
                 for (const toolCall of msg.tool_calls) {
                     if (toolCall.function) {
                         let parsedArgs = toolCall.function.arguments;
@@ -47,13 +48,13 @@ export function normalizeMessages(request: ChatCompletionRequest): string {
                              }
                         }
 
-                        flattenedPrompt += `<tool_call>\n${JSON.stringify({name: toolCall.function.name, arguments: parsedArgs})}\n</tool_call>\n`;
+                        flattenedPrompt += `<tool_call>\n${JSON.stringify({id: toolCall.id, name: toolCall.function.name, arguments: parsedArgs})}\n</tool_call>\n`;
                     }
                 }
             }
             flattenedPrompt += `\n`;
         } else if (msg.role === 'tool') {
-             flattenedPrompt += `[Tool Result (name: ${msg.name || 'unknown'}, id: ${msg.tool_call_id || 'unknown'})]:\n${msg.content}\n\n`;
+             flattenedPrompt += `[Tool Result]:\ntool_call_id: ${msg.tool_call_id || 'unknown'}\n${msg.content}\n\n`;
         }
     }
 
@@ -65,7 +66,7 @@ export function normalizeMessages(request: ChatCompletionRequest): string {
              flattenedPrompt += `[User]:\n${lastMsg.content}\n\n`;
          } else if (lastMsg.role === 'tool') {
              // Edge case where a tool result is the last message
-             flattenedPrompt += `[Tool Result (name: ${lastMsg.name || 'unknown'}, id: ${lastMsg.tool_call_id || 'unknown'})]:\n${lastMsg.content}\n\nPlease proceed based on the tool result above.\n\n`;
+             flattenedPrompt += `[Tool Result]:\ntool_call_id: ${lastMsg.tool_call_id || 'unknown'}\n${lastMsg.content}\n\nPlease proceed based on the tool result above.\n\n`;
          }
     }
   }

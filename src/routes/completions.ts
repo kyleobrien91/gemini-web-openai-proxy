@@ -8,15 +8,12 @@ import { createContentChunk, createToolHeaderChunk, createToolArgChunk, createDo
 import { browserWorker } from '../cdp/browser.js';
 import { config } from '../config.js';
 import { Mutex } from '../utils/mutex.js';
+import { getModel } from '../models/registry.js';
 
 const router = Router();
 const routeMutex = new Mutex(); // Global mutex for the route
 
-// Valid model mapping for strict checking
-const validModels = [
-    'gemini-3.7-flash', 'gemini-3.1-pro', 'gemini-3.5-flash-lite',
-    'gemini-2.5-pro', 'gemini-2.5-flash'
-];
+
 
 router.post('/v1/chat/completions', async (req, res) => {
   let timeoutId: NodeJS.Timeout | undefined;
@@ -35,7 +32,7 @@ router.post('/v1/chat/completions', async (req, res) => {
     }
 
     // Model validation
-    if (!validModels.includes(request.model)) {
+    if (!getModel(request.model)) {
         return res.status(400).json({ error: { message: `Unknown model: ${request.model}` } });
     }
 
@@ -93,20 +90,22 @@ router.post('/v1/chat/completions', async (req, res) => {
           let currentToolCall: any = null;
           let stopReason: 'stop' | 'tool_calls' = 'stop';
           let reflectionReason: string | null = null;
+          let isFirstChunk = true;
 
           const lexer = new StreamLexer({
             allowedTools,
             onContent: (content) => {
               if (isStream) {
-                // Note: Reflection retries with streaming are disabled entirely to prevent interleaved output
-                res.write(formatSSE(createContentChunk(chatId, model, content)));
+                res.write(formatSSE(createContentChunk(chatId, model, content, isFirstChunk)));
+                isFirstChunk = false;
               } else {
                  bufferedContent += content;
               }
             },
             onToolCallStart: (index, id, name) => {
               if (isStream) {
-                res.write(formatSSE(createToolHeaderChunk(chatId, model, index, id, name)));
+                res.write(formatSSE(createToolHeaderChunk(chatId, model, index, id, name, isFirstChunk)));
+                isFirstChunk = false;
               } else {
                   currentToolCall = {
                       index, id, type: 'function', function: { name, arguments: '' }
@@ -191,7 +190,9 @@ router.post('/v1/chat/completions', async (req, res) => {
 
             if (signal.aborted && process.env.NODE_ENV !== 'test') throw new Error("Request cancelled or timed out");
 
-            // Only retry in non-streaming mode to prevent SSE chunk corruption
+            // Only retry in non-streaming mode to prevent SSE chunk corruption.
+            // Even though StreamLexer buffers invalid tool calls, a partial response might have
+            // already emitted text, so retrying would cause duplicated text or role deltas.
             if (turnResult.reflectionReason && retries < config.maxRetries && !isStream) {
                 retries++;
                 initialPrompt = generateReflectionPrompt(turnResult.reflectionReason);
@@ -199,13 +200,16 @@ router.post('/v1/chat/completions', async (req, res) => {
                 continue;
             }
 
-            if (turnResult.reflectionReason && (retries >= config.maxRetries || isStream)) {
-                 if (isStream) {
-                     res.write(formatSSE(createContentChunk(chatId, model, `\n\nError: ${turnResult.reflectionReason}`)));
-                 } else {
-                     turnResult.content += `\n\nError: ${turnResult.reflectionReason}`;
-                 }
-                 turnResult.finishReason = 'stop';
+            if (turnResult.reflectionReason && retries >= config.maxRetries) {
+                 // Non-streaming invalid generation -> 5xx error
+                 throw new Error(`Failed to generate valid output after ${config.maxRetries} reflection attempts. Last error: ${turnResult.reflectionReason}`);
+            }
+
+            if (turnResult.reflectionReason && isStream) {
+                 // Streaming invalid generation -> terminate SSE immediately without [DONE]
+                 // This instructs the client that the stream failed, rather than claiming successful completion.
+                 res.end();
+                 return;
             }
 
             break; // Exit loop
@@ -236,14 +240,17 @@ router.post('/v1/chat/completions', async (req, res) => {
         }
     } catch (e: any) {
         if (!res.headersSent) {
-           res.status(e.message.includes("Unknown model") || e.message.includes("Model switch failed") ? 400 : 504).json({ error: { message: e.message } });
+           let status = 502; // Default to Bad Gateway for generic upstream failures
+           if (e.message.includes("Unknown model") || e.message.includes("Model switch failed")) status = 400;
+           res.status(status).json({ error: { message: e.message } });
         } else {
            if (isStream) {
-               res.write(formatSSE(createContentChunk(chatId, model, `\n\nError: ${e.message}`)));
-               res.write(formatSSE(createDoneChunk(chatId, model, 'stop')));
-               res.write(formatSSE('[DONE]'));
+               // Do not emit success markers on failure in stream mode.
+               // Simply close the stream to signal an incomplete/failed response.
+               res.end();
+           } else {
+               res.end();
            }
-           res.end();
         }
     } finally {
         routeMutex.unlock();
