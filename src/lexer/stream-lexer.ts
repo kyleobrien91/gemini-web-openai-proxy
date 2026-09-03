@@ -19,7 +19,7 @@ export interface LexerOptions {
   onPushbackRequest?: (reason: string) => void;
 }
 
-type LexerState = 'TEXT' | 'IN_TOOL_CALL';
+type LexerState = 'TEXT' | 'IN_TOOL_CALL' | 'FAILED';
 
 export class StreamLexer {
   private buffer = '';
@@ -42,6 +42,11 @@ export class StreamLexer {
     let advanced = true;
     while (advanced && this.buffer.length > 0) {
       advanced = false;
+
+      if (this.state === 'FAILED') {
+          this.buffer = ''; // Discard everything
+          return;
+      }
 
       if (this.state === 'TEXT') {
           // In TEXT state, we are looking for the start of a tool call or markdown fence.
@@ -126,7 +131,7 @@ export class StreamLexer {
                   this.options.onPushbackRequest("Generated tool call exceeded maximum token length without closing tag. Please provide concise output.");
               }
               this.buffer = ''; // Discard the malformed candidate entirely
-              this.state = 'TEXT';
+              this.state = 'FAILED';
               return;
           }
 
@@ -134,7 +139,7 @@ export class StreamLexer {
           // Find the closing tag, but ignore it if it's inside a JSON string.
           let closeIndex = -1;
           let closeLength = 0;
-          let inString = false;
+          let stringQuote = ''; // Tracks the active quote character ('"' or "'")
           let escapeNext = false;
 
           for (let i = 0; i < this.buffer.length; i++) {
@@ -150,12 +155,20 @@ export class StreamLexer {
                   continue;
               }
 
-              if (char === '"') {
-                  inString = !inString;
+              if (stringQuote !== '') {
+                  // Inside a string, only exit if we see the matching quote
+                  if (char === stringQuote) {
+                      stringQuote = '';
+                  }
                   continue;
               }
 
-              if (!inString && char === '<') {
+              if (char === '"' || char === "'") {
+                  stringQuote = char;
+                  continue;
+              }
+
+              if (stringQuote === '' && char === '<') {
                   const suffix = this.buffer.substring(i);
                   const match = suffix.match(/^(<\/tool[-_]?call>|<\/tool>|<\/function_call>)(?:\s*\n?```)?/i);
                   if (match) {
@@ -197,6 +210,8 @@ export class StreamLexer {
         if (this.options.onPushbackRequest) {
             this.options.onPushbackRequest("The tool call format was invalid. Please ensure it is wrapped in <tool_call> tags.");
         }
+        this.state = 'FAILED';
+        this.buffer = '';
         return;
     }
 
@@ -209,22 +224,28 @@ export class StreamLexer {
           matchedTool = this.options.allowedTools.find(t => t.function.name === parsed.name);
           if (!matchedTool) {
                if (this.options.onPushbackRequest) {
-                   this.options.onPushbackRequest(`You attempted to call an unknown tool: '${parsed.name}'. Please only use tools from the provided schema.`);
-               }
-               return;
+            this.options.onPushbackRequest(`You attempted to call an unknown tool: '${parsed.name}'. Please only use tools from the provided schema.`);
+        }
+        this.state = 'FAILED';
+        this.buffer = '';
+        return;
           }
       } else {
          if (this.options.onPushbackRequest) {
-             this.options.onPushbackRequest(`You attempted to call a tool ('${parsed.name}'), but no tools are available. Please respond with regular text.`);
-         }
-         return;
+            this.options.onPushbackRequest(`You attempted to call a tool ('${parsed.name}'), but no tools are available. Please respond with regular text.`);
+        }
+        this.state = 'FAILED';
+        this.buffer = '';
+        return;
       }
 
       if (parsed.arguments && typeof parsed.arguments !== 'object') {
            if (this.options.onPushbackRequest) {
-               this.options.onPushbackRequest(`The arguments for tool '${parsed.name}' must be a valid JSON object.`);
-           }
-           return;
+            this.options.onPushbackRequest(`The arguments for tool '${parsed.name}' must be a valid JSON object.`);
+        }
+        this.state = 'FAILED';
+        this.buffer = '';
+        return;
       }
 
       if (matchedTool?.function?.parameters) {
@@ -234,16 +255,20 @@ export class StreamLexer {
               if (!valid) {
                   const errorMsg = ajv.errorsText(validate.errors);
                   if (this.options.onPushbackRequest) {
-                       this.options.onPushbackRequest(`Schema validation failed for tool '${parsed.name}': ${errorMsg}`);
-                  }
-                  return;
+            this.options.onPushbackRequest(`Schema validation failed for tool '${parsed.name}': ${errorMsg}`);
+        }
+        this.state = 'FAILED';
+        this.buffer = '';
+        return;
               }
           } catch (e: any) {
               console.error("AJV compilation/validation error:", e);
               if (this.options.onPushbackRequest) {
-                   this.options.onPushbackRequest(`Internal schema compilation failed for tool '${parsed.name}'. Check tool schema.`);
-              }
-              return;
+            this.options.onPushbackRequest(`Internal schema compilation failed for tool '${parsed.name}'. Check tool schema.`);
+        }
+        this.state = 'FAILED';
+        this.buffer = '';
+        return;
           }
       }
 
@@ -265,18 +290,25 @@ export class StreamLexer {
   finish() {
     this.processBuffer();
 
+    if (this.state === 'FAILED') {
+        // Do not emit a successful completion
+        // The router will handle erroring out the stream.
+        return;
+    }
+
     // If the stream ends and we are stuck in IN_TOOL_CALL, it's malformed/unclosed.
     // Try to recover it by forcibly closing it.
     if (this.state === 'IN_TOOL_CALL' && this.buffer.length > 0) {
         this.processBufferedToolCall(this.buffer);
         this.buffer = '';
-        this.state = 'TEXT';
     } else if (this.state === 'TEXT' && this.buffer.length > 0) {
         // Just leftover normal text that looked like a start tag
         this.options.onContent(this.buffer);
         this.buffer = '';
     }
 
-    this.options.onFinished(this.hasEmittedTool ? 'tool_calls' : 'stop');
+    if (this.state !== ('FAILED' as any)) {
+        this.options.onFinished(this.hasEmittedTool ? 'tool_calls' : 'stop');
+    }
   }
 }
