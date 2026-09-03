@@ -130,18 +130,51 @@ export class StreamLexer {
               return;
           }
 
-          // We need to find the closing tag.
-          const closeMatch = this.buffer.match(/(<\/tool[-_]?call>|<\/tool>|<\/function_call>)(?:\s*\n?```)?/i);
 
-          if (closeMatch && closeMatch.index !== undefined) {
+          // Find the closing tag, but ignore it if it's inside a JSON string.
+          let closeIndex = -1;
+          let closeLength = 0;
+          let inString = false;
+          let escapeNext = false;
+
+          for (let i = 0; i < this.buffer.length; i++) {
+              const char = this.buffer[i];
+
+              if (escapeNext) {
+                  escapeNext = false;
+                  continue;
+              }
+
+              if (char === '\\') {
+                  escapeNext = true;
+                  continue;
+              }
+
+              if (char === '"') {
+                  inString = !inString;
+                  continue;
+              }
+
+              if (!inString && char === '<') {
+                  const suffix = this.buffer.substring(i);
+                  const match = suffix.match(/^(<\/tool[-_]?call>|<\/tool>|<\/function_call>)(?:\s*\n?```)?/i);
+                  if (match) {
+                      closeIndex = i;
+                      closeLength = match[0].length;
+                      break;
+                  }
+              }
+          }
+
+          if (closeIndex !== -1) {
               // We found the end!
-              const fullToolCall = this.buffer.substring(0, closeMatch.index + closeMatch[0].length);
+              const fullToolCall = this.buffer.substring(0, closeIndex + closeLength);
 
               // Process it
               this.processBufferedToolCall(fullToolCall);
 
               // Reset buffer to whatever comes after the tool call
-              this.buffer = this.buffer.substring(closeMatch.index + closeMatch[0].length);
+              this.buffer = this.buffer.substring(closeIndex + closeLength);
               this.state = 'TEXT'; // Back to text mode
               advanced = true;
               continue;
@@ -149,6 +182,7 @@ export class StreamLexer {
               // Still waiting for closing tag.
               break;
           }
+
       }
     }
   }

@@ -12,7 +12,7 @@ This proxy is designed to serve as the backend for the OpenCode agent loop. It a
 - **OpenAI Specification Compatibility:** Acts as a backend endpoint for agents requiring standard `v1/chat/completions` inputs.
 - **Full Tool / Function Calling:** Uses system prompt schema injection + strict JSON schema validation for parsing XML (`<tool_call>`).
 - **CDP Session Bridge:** Reuses active browser authentication over port 9222 without exposing plaintext credentials.
-- **Streaming & Reflection:** Delivers real-time generation chunks and auto-recovers from transient formatting errors without interrupting the client.
+- **Streaming & Reflection:** Delivers real-time generation chunks. In non-streaming mode (`stream: false`), malformed or invalid tool output may trigger automatic Tier-2 reflection/retries within the same conversation to recover. In streaming mode (`stream: true`), reflection is intentionally disabled (because already-emitted chunks cannot be retracted) and an invalid tool call immediately terminates the stream without emitting a successful completion marker.
 
 ## Known Limitations
 - **DOM Streaming Heuristics:** Stream token extraction relies on observing DOM UI components via `MutationObserver`. A direct integration using the CDP Network/Fetch domains to capture raw backend network chunk streams is scheduled for a future version.
