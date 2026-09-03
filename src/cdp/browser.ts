@@ -88,11 +88,19 @@ export class BrowserWorker {
             })();
         `;
 
-        const submitRes = await this.cdp.send('Runtime.evaluate', {
-            expression: script,
-            awaitPromise: true,
-            returnByValue: true
-        });
+        let submitRes;
+        try {
+            submitRes = await this.cdp.send('Runtime.evaluate', {
+                expression: script,
+                awaitPromise: true,
+                returnByValue: true
+            });
+        } catch (e) {
+            // CDP connection dropped or evaluation failed fundamentally mid-flight.
+            // We must strictly clean up the active StreamListener so it doesn't leak into the next request.
+            await streamHandle.cleanup();
+            throw e;
+        }
 
         if (submitRes && submitRes.value === "ABORTED") {
             await streamHandle.cleanup();
