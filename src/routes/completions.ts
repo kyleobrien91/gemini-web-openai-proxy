@@ -190,9 +190,10 @@ router.post('/v1/chat/completions', async (req, res) => {
 
             if (signal.aborted && process.env.NODE_ENV !== 'test') throw new Error("Request cancelled or timed out");
 
-            // Allow retry in streaming mode because StreamLexer buffers and drops invalid tool calls
-            // before emitting them to the SSE stream.
-            if (turnResult.reflectionReason && retries < config.maxRetries) {
+            // Only retry in non-streaming mode to prevent SSE chunk corruption.
+            // Even though StreamLexer buffers invalid tool calls, a partial response might have
+            // already emitted text, so retrying would cause duplicated text or role deltas.
+            if (turnResult.reflectionReason && retries < config.maxRetries && !isStream) {
                 retries++;
                 initialPrompt = generateReflectionPrompt(turnResult.reflectionReason);
                 isRetry = true;

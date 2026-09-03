@@ -25,6 +25,7 @@ export class StreamLexer {
   private currentToolId = '';
   private options: LexerOptions;
   private hasEmittedTool = false;
+  private searchOffset = 0;
 
   constructor(options: LexerOptions) {
     this.options = options;
@@ -32,13 +33,24 @@ export class StreamLexer {
 
   processChunk(chunk: string) {
     this.buffer += chunk;
-    this.processBuffer();
+    this.processBuffer(chunk.length);
   }
 
-  private processBuffer() {
+  private processBuffer(chunkLen: number = 0) {
     let advanced = true;
     while (advanced && this.buffer.length > 0) {
       advanced = false;
+
+      // Safety guard against massive buffers (100KB)
+      if (this.buffer.length > 100000) {
+          if (this.options.onPushbackRequest) {
+              this.options.onPushbackRequest("Generated output exceeded maximum token length without closing tag. Please provide concise output.");
+          }
+          this.options.onContent(this.buffer.substring(0, 90000));
+          this.buffer = this.buffer.substring(90000);
+          this.searchOffset = 0;
+          return;
+      }
 
       // 1. Look for a complete markdown block or tool call tag
       // Matches:
@@ -47,10 +59,20 @@ export class StreamLexer {
       // <tool_call>...</tool_call>
       // optional markdown end (```)
       const pattern = /([\s\S]*?)(?:^|\n)?(?:```(?:xml|json)?\s*\n?)?(<tool[-_]?call>|<tool>|<function_call>)([\s\S]*?)(<\/tool[-_]?call>|<\/tool>|<\/function_call>)(?:\s*\n?```)?/i;
-      const mdToolMatch = this.buffer.match(pattern);
+      // Optimize by only matching from the searchOffset if possible, but JS regex doesn't support starting offset directly.
+      // Instead, we just match on the substring.
+      const searchTarget = this.buffer.substring(this.searchOffset);
+      const subMatch = searchTarget.match(pattern);
+      let mdToolMatch: RegExpMatchArray | null = null;
+      if (subMatch && subMatch.index !== undefined) {
+         // reconstruct full match object relative to this.buffer
+         mdToolMatch = subMatch;
+         mdToolMatch.index! += this.searchOffset;
+      }
 
-      if (mdToolMatch && mdToolMatch.index !== undefined) {
-          const textBefore = mdToolMatch[1];
+      if (mdToolMatch && mdToolMatch[0] !== undefined && mdToolMatch.index !== undefined) {
+          const matchIndex = mdToolMatch.index;
+          const textBefore = mdToolMatch[1] ? this.buffer.substring(0, matchIndex) + mdToolMatch[1] : this.buffer.substring(0, matchIndex);
           const fullMatch = mdToolMatch[0];
           const startTag = mdToolMatch[2];
           const content = mdToolMatch[3];
@@ -63,20 +85,34 @@ export class StreamLexer {
 
           this.processBufferedToolCall(rawToolCall);
 
-          this.buffer = this.buffer.substring(mdToolMatch.index + fullMatch.length);
+          this.buffer = this.buffer.substring(matchIndex + fullMatch.length);
+          this.searchOffset = 0;
           advanced = true;
           continue;
       }
 
       // 2. Look for an INCOMPLETE tool call or markdown fence at the END of the buffer
       const incompletePattern = /(?:^|\n)(?:```(?:xml|json)?\s*\n?)?(<tool[-_]?call>|<tool>|<function_call>)[\s\S]*$/i;
-      const incompleteMatch = this.buffer.match(incompletePattern);
+      // We must search from the last safe offset. To be safe, we back up a bit to catch tags spanning chunks.
+      const safeOffset = Math.max(0, this.buffer.length - 2000 - chunkLen);
+      const incSearchTarget = this.buffer.substring(safeOffset);
+      const incSubMatch = incSearchTarget.match(incompletePattern);
+      let incompleteMatch: RegExpMatchArray | null = null;
+      if (incSubMatch && incSubMatch.index !== undefined) {
+          incompleteMatch = incSubMatch;
+          incompleteMatch.index! += safeOffset;
+      }
 
       if (incompleteMatch && incompleteMatch.index !== undefined) {
-         const textBefore = this.buffer.substring(0, incompleteMatch.index);
-         if (textBefore) {
-             this.options.onContent(textBefore);
-             this.buffer = this.buffer.substring(incompleteMatch.index);
+         const incIndex2 = incompleteMatch.index;
+         const textBefore2 = this.buffer.substring(0, incIndex2);
+         if (textBefore2) {
+             this.options.onContent(textBefore2);
+             this.buffer = this.buffer.substring(incIndex2);
+             this.searchOffset = 0;
+         } else {
+             // Already at the start of the buffer, just wait for more
+             this.searchOffset = Math.max(0, this.buffer.length - 100);
          }
          break;
       }
@@ -105,11 +141,16 @@ export class StreamLexer {
       if (flushUpTo > 0 && flushUpTo < this.buffer.length) {
           this.options.onContent(this.buffer.substring(0, flushUpTo));
           this.buffer = this.buffer.substring(flushUpTo);
+          this.searchOffset = 0;
           advanced = true; // Though we don't need to continue since flushUpTo < buffer.length means it hit the break above
       } else if (flushUpTo === this.buffer.length) {
           // Entire buffer is safe to flush
           this.options.onContent(this.buffer);
           this.buffer = '';
+          this.searchOffset = 0;
+      } else {
+          // Nothing to flush, advance search offset for next chunk
+          this.searchOffset = Math.max(0, this.buffer.length - 100);
       }
     }
   }

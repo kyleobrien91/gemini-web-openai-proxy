@@ -24,6 +24,6 @@ Rules:
 2. Arguments must be valid JSON and strictly conform to the supplied schema.
 3. Multiple tool calls are allowed where appropriate.
 4. Tool calls must not be wrapped in Markdown fences (e.g., no \`\`\`json or \`\`\`xml).
-5. Normal text may be emitted when no tool is required or as explanation before/after tool calls.
+5. Normal text may be emitted when no tool is required, or as explanation before/after tool calls. TEXT MUST NOT APPEAR INSIDE OR BETWEEN THE <tool_call> AND </tool_call> TAGS (other than the JSON).
 `;
 }
