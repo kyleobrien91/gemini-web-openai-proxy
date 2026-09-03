@@ -19,13 +19,15 @@ export interface LexerOptions {
   onPushbackRequest?: (reason: string) => void;
 }
 
+type LexerState = 'TEXT' | 'IN_TOOL_CALL';
+
 export class StreamLexer {
   private buffer = '';
   private toolCallIndex = 0;
   private currentToolId = '';
   private options: LexerOptions;
   private hasEmittedTool = false;
-  private searchOffset = 0;
+  private state: LexerState = 'TEXT';
 
   constructor(options: LexerOptions) {
     this.options = options;
@@ -33,124 +35,120 @@ export class StreamLexer {
 
   processChunk(chunk: string) {
     this.buffer += chunk;
-    this.processBuffer(chunk.length);
+    this.processBuffer();
   }
 
-  private processBuffer(chunkLen: number = 0) {
+  private processBuffer() {
     let advanced = true;
     while (advanced && this.buffer.length > 0) {
       advanced = false;
 
-      // Safety guard against massive buffers (100KB)
-      if (this.buffer.length > 100000) {
-          if (this.options.onPushbackRequest) {
-              this.options.onPushbackRequest("Generated output exceeded maximum token length without closing tag. Please provide concise output.");
-          }
-          this.options.onContent(this.buffer.substring(0, 90000));
-          this.buffer = this.buffer.substring(90000);
-          this.searchOffset = 0;
-          return;
-      }
+      if (this.state === 'TEXT') {
+          // In TEXT state, we are looking for the start of a tool call or markdown fence.
+          // To safely flush text without dropping incomplete tool call openers, we look for potential start sequences.
+          // Instead of regex over the whole string, we scan for the first < or ```.
 
-      // 1. Look for a complete markdown block or tool call tag
-      // Matches:
-      // textBefore
-      // optional markdown start (```xml)
-      // <tool_call>...</tool_call>
-      // optional markdown end (```)
-      const pattern = /([\s\S]*?)(?:^|\n)?(?:```(?:xml|json)?\s*\n?)?(<tool[-_]?call>|<tool>|<function_call>)([\s\S]*?)(<\/tool[-_]?call>|<\/tool>|<\/function_call>)(?:\s*\n?```)?/i;
-      // Optimize by only matching from the searchOffset if possible, but JS regex doesn't support starting offset directly.
-      // Instead, we just match on the substring.
-      const searchTarget = this.buffer.substring(this.searchOffset);
-      const subMatch = searchTarget.match(pattern);
-      let mdToolMatch: RegExpMatchArray | null = null;
-      if (subMatch && subMatch.index !== undefined) {
-         // reconstruct full match object relative to this.buffer
-         mdToolMatch = subMatch;
-         mdToolMatch.index! += this.searchOffset;
-      }
+          let potentialStartIdx = -1;
+          for (let i = 0; i < this.buffer.length; i++) {
+              if (this.buffer[i] === '<' || (this.buffer.startsWith('```', i))) {
+                  // It's a potential start. We need to check if it actually forms a valid start,
+                  // or if it's incomplete at the end of the buffer.
 
-      if (mdToolMatch && mdToolMatch[0] !== undefined && mdToolMatch.index !== undefined) {
-          const matchIndex = mdToolMatch.index;
-          const textBefore = mdToolMatch[1] ? this.buffer.substring(0, matchIndex) + mdToolMatch[1] : this.buffer.substring(0, matchIndex);
-          const fullMatch = mdToolMatch[0];
-          const startTag = mdToolMatch[2];
-          const content = mdToolMatch[3];
-          const endTag = mdToolMatch[4];
-          const rawToolCall = startTag + content + endTag;
+                  const suffix = this.buffer.substring(i);
+                  const isStartOfTag =
+                      '<tool_call>'.startsWith(suffix) ||
+                      '<tool-call>'.startsWith(suffix) ||
+                      '<tool>'.startsWith(suffix) ||
+                      '<function_call>'.startsWith(suffix);
 
-          if (textBefore) {
-              this.options.onContent(textBefore);
+                  const isStartOfMd =
+                      '```xml\n<'.startsWith(suffix) ||
+                      '```json\n<'.startsWith(suffix) ||
+                      '```\n<'.startsWith(suffix) ||
+                      '```'.startsWith(suffix) ||
+                      '\n```'.startsWith(suffix);
+
+                  const completeTagMatch = suffix.match(/^(?:\n)?(?:```(?:xml|json)?\s*\n?)?(<tool[-_]?call>|<tool>|<function_call>)/i);
+
+                  if (completeTagMatch || isStartOfTag || isStartOfMd) {
+                      potentialStartIdx = i;
+                      break;
+                  }
+              }
           }
 
-          this.processBufferedToolCall(rawToolCall);
-
-          this.buffer = this.buffer.substring(matchIndex + fullMatch.length);
-          this.searchOffset = 0;
-          advanced = true;
-          continue;
-      }
-
-      // 2. Look for an INCOMPLETE tool call or markdown fence at the END of the buffer
-      const incompletePattern = /(?:^|\n)(?:```(?:xml|json)?\s*\n?)?(<tool[-_]?call>|<tool>|<function_call>)[\s\S]*$/i;
-      // We must search from the last safe offset. To be safe, we back up a bit to catch tags spanning chunks.
-      const safeOffset = Math.max(0, this.buffer.length - 2000 - chunkLen);
-      const incSearchTarget = this.buffer.substring(safeOffset);
-      const incSubMatch = incSearchTarget.match(incompletePattern);
-      let incompleteMatch: RegExpMatchArray | null = null;
-      if (incSubMatch && incSubMatch.index !== undefined) {
-          incompleteMatch = incSubMatch;
-          incompleteMatch.index! += safeOffset;
-      }
-
-      if (incompleteMatch && incompleteMatch.index !== undefined) {
-         const incIndex2 = incompleteMatch.index;
-         const textBefore2 = this.buffer.substring(0, incIndex2);
-         if (textBefore2) {
-             this.options.onContent(textBefore2);
-             this.buffer = this.buffer.substring(incIndex2);
-             this.searchOffset = 0;
-         } else {
-             // Already at the start of the buffer, just wait for more
-             this.searchOffset = Math.max(0, this.buffer.length - 100);
-         }
-         break;
-      }
-
-      // 3. Look for an INCOMPLETE potential start sequence
-      let flushUpTo = this.buffer.length;
-      for (let i = this.buffer.length - 1; i >= 0; i--) {
-          const suffix = this.buffer.substring(i);
-          if (
-              '<tool_call>'.startsWith(suffix) ||
-              '<tool-call>'.startsWith(suffix) ||
-              '<tool>'.startsWith(suffix) ||
-              '<function_call>'.startsWith(suffix) ||
-              '```xml\n<'.startsWith(suffix) ||
-              '```json\n<'.startsWith(suffix) ||
-              '```\n<'.startsWith(suffix) ||
-              '```'.startsWith(suffix) ||
-              '\n```'.startsWith(suffix)
-          ) {
-              flushUpTo = i;
+          if (potentialStartIdx === -1) {
+              // No potential starts found anywhere. Safe to flush entirely.
+              if (this.buffer.length > 100000) {
+                  // Just for general safety, though plain text doesn't strictly need it, it avoids OOM.
+                  this.options.onContent(this.buffer);
+                  this.buffer = '';
+                  return;
+              }
+              this.options.onContent(this.buffer);
+              this.buffer = '';
+              return; // We consumed everything
+          } else if (potentialStartIdx > 0) {
+              // We found a potential start, flush everything before it
+              this.options.onContent(this.buffer.substring(0, potentialStartIdx));
+              this.buffer = this.buffer.substring(potentialStartIdx);
+              advanced = true;
+              continue;
           } else {
+              // potentialStartIdx === 0. The buffer *starts* with a potential tag or markdown fence.
+              // Check if it's a complete opener.
+              const match = this.buffer.match(/^(?:\n)?(?:```(?:xml|json)?\s*\n?)?(<tool[-_]?call>|<tool>|<function_call>)/i);
+
+              if (match) {
+                  // We have a committed tool call opener!
+                  // Transition state, do NOT flush this text.
+                  this.state = 'IN_TOOL_CALL';
+                  advanced = true;
+                  continue; // Loop will restart in IN_TOOL_CALL state
+              } else {
+                  // It's incomplete. We must wait for more chunks to see if it becomes a valid tag.
+                  // Wait, what if it's just a lone '<' at the end of the chunk?
+                  // If buffer length > e.g. 50, and it hasn't completed a tag, it's probably not a tag.
+                  // But 'isStartOfTag' guarantees it *could* be a tag based on the suffix matching prefix.
+                  // Since potentialStartIdx === 0, the ENTIRE buffer is a prefix of a tag (e.g. "<tool").
+                  // We just wait.
+                  break;
+              }
+          }
+      } else if (this.state === 'IN_TOOL_CALL') {
+          // We are actively inside a tool call. The buffer starts with the tool call opener.
+          // Look for the closing tag.
+
+          if (this.buffer.length > 100000) {
+              // Safety guard: A committed tool-call candidate exceeded the limit.
+              // Trigger pushback/error and discard. DO NOT flush as assistant text.
+              if (this.options.onPushbackRequest) {
+                  this.options.onPushbackRequest("Generated tool call exceeded maximum token length without closing tag. Please provide concise output.");
+              }
+              this.buffer = ''; // Discard the malformed candidate entirely
+              this.state = 'TEXT';
+              return;
+          }
+
+          // We need to find the closing tag.
+          const closeMatch = this.buffer.match(/(<\/tool[-_]?call>|<\/tool>|<\/function_call>)(?:\s*\n?```)?/i);
+
+          if (closeMatch && closeMatch.index !== undefined) {
+              // We found the end!
+              const fullToolCall = this.buffer.substring(0, closeMatch.index + closeMatch[0].length);
+
+              // Process it
+              this.processBufferedToolCall(fullToolCall);
+
+              // Reset buffer to whatever comes after the tool call
+              this.buffer = this.buffer.substring(closeMatch.index + closeMatch[0].length);
+              this.state = 'TEXT'; // Back to text mode
+              advanced = true;
+              continue;
+          } else {
+              // Still waiting for closing tag.
               break;
           }
-      }
-
-      if (flushUpTo > 0 && flushUpTo < this.buffer.length) {
-          this.options.onContent(this.buffer.substring(0, flushUpTo));
-          this.buffer = this.buffer.substring(flushUpTo);
-          this.searchOffset = 0;
-          advanced = true; // Though we don't need to continue since flushUpTo < buffer.length means it hit the break above
-      } else if (flushUpTo === this.buffer.length) {
-          // Entire buffer is safe to flush
-          this.options.onContent(this.buffer);
-          this.buffer = '';
-          this.searchOffset = 0;
-      } else {
-          // Nothing to flush, advance search offset for next chunk
-          this.searchOffset = Math.max(0, this.buffer.length - 100);
       }
     }
   }
@@ -232,12 +230,16 @@ export class StreamLexer {
 
   finish() {
     this.processBuffer();
-    if (this.buffer.length > 0) {
-        if (this.buffer.match(/(<tool[-_]?call>|<tool>|<function_call>)/i)) {
-            this.processBufferedToolCall(this.buffer);
-        } else {
-            this.options.onContent(this.buffer);
-        }
+
+    // If the stream ends and we are stuck in IN_TOOL_CALL, it's malformed/unclosed.
+    // Try to recover it by forcibly closing it.
+    if (this.state === 'IN_TOOL_CALL' && this.buffer.length > 0) {
+        this.processBufferedToolCall(this.buffer);
+        this.buffer = '';
+        this.state = 'TEXT';
+    } else if (this.state === 'TEXT' && this.buffer.length > 0) {
+        // Just leftover normal text that looked like a start tag
+        this.options.onContent(this.buffer);
         this.buffer = '';
     }
 

@@ -201,12 +201,15 @@ router.post('/v1/chat/completions', async (req, res) => {
             }
 
             if (turnResult.reflectionReason && retries >= config.maxRetries) {
-                 if (isStream) {
-                     res.write(formatSSE(createContentChunk(chatId, model, `\n\nError: ${turnResult.reflectionReason}`)));
-                 } else {
-                     turnResult.content += `\n\nError: ${turnResult.reflectionReason}`;
-                 }
-                 turnResult.finishReason = 'stop';
+                 // Non-streaming invalid generation -> 5xx error
+                 throw new Error(`Failed to generate valid output after ${config.maxRetries} reflection attempts. Last error: ${turnResult.reflectionReason}`);
+            }
+
+            if (turnResult.reflectionReason && isStream) {
+                 // Streaming invalid generation -> terminate SSE immediately without [DONE]
+                 // This instructs the client that the stream failed, rather than claiming successful completion.
+                 res.end();
+                 return;
             }
 
             break; // Exit loop
@@ -237,14 +240,17 @@ router.post('/v1/chat/completions', async (req, res) => {
         }
     } catch (e: any) {
         if (!res.headersSent) {
-           res.status(e.message.includes("Unknown model") || e.message.includes("Model switch failed") ? 400 : 504).json({ error: { message: e.message } });
+           let status = 502; // Default to Bad Gateway for generic upstream failures
+           if (e.message.includes("Unknown model") || e.message.includes("Model switch failed")) status = 400;
+           res.status(status).json({ error: { message: e.message } });
         } else {
            if (isStream) {
-               res.write(formatSSE(createContentChunk(chatId, model, `\n\nError: ${e.message}`)));
-               res.write(formatSSE(createDoneChunk(chatId, model, 'stop')));
-               res.write(formatSSE('[DONE]'));
+               // Do not emit success markers on failure in stream mode.
+               // Simply close the stream to signal an incomplete/failed response.
+               res.end();
+           } else {
+               res.end();
            }
-           res.end();
         }
     } finally {
         routeMutex.unlock();
