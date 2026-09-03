@@ -56,14 +56,14 @@ export class ModeSwitcher {
             if (!verifyBtn) {
                 result = "VERIFICATION_OPTION_VANISHED";
             } else {
-                // Expanded robust selection checks covering standard a11y states, classes, and generic active markers
+                // Strictly evaluate accessibility and active state classes.
+                // We do NOT use broad child queries like 'svg' or 'mat-icon' which can cause false positives.
                 const isSelected =
                     verifyBtn.getAttribute('aria-selected') === 'true' ||
                     verifyBtn.getAttribute('aria-checked') === 'true' ||
                     verifyBtn.getAttribute('aria-current') === 'true' ||
                     verifyBtn.classList.contains('selected') ||
-                    verifyBtn.classList.contains('is-selected') ||
-                    verifyBtn.querySelector('svg, mat-icon, [data-icon="check"]') !== null;
+                    verifyBtn.classList.contains('is-selected');
 
                 if (isSelected) {
                     result = "SUCCESS";
