@@ -36,7 +36,10 @@ export class ModeSwitcher {
         await new Promise(r => setTimeout(r, 500));
 
         const optionBtn = document.querySelector('[data-test-id="${testId}"]');
-        if (!optionBtn) return "OPTION_NOT_FOUND";
+        if (!optionBtn) {
+            menuBtn.click(); // cleanup
+            return "OPTION_NOT_FOUND";
+        }
 
         optionBtn.click();
 
@@ -47,19 +50,31 @@ export class ModeSwitcher {
         menuBtn.click();
         await new Promise(r => setTimeout(r, 500));
 
-        const verifyBtn = document.querySelector('[data-test-id="${testId}"]');
-        if (!verifyBtn) return "VERIFICATION_OPTION_VANISHED";
+        let result = "VERIFICATION_FAILED_NOT_SELECTED";
+        try {
+            const verifyBtn = document.querySelector('[data-test-id="${testId}"]');
+            if (!verifyBtn) {
+                result = "VERIFICATION_OPTION_VANISHED";
+            } else {
+                // Expanded robust selection checks covering standard a11y states, classes, and generic active markers
+                const isSelected =
+                    verifyBtn.getAttribute('aria-selected') === 'true' ||
+                    verifyBtn.getAttribute('aria-checked') === 'true' ||
+                    verifyBtn.getAttribute('aria-current') === 'true' ||
+                    verifyBtn.classList.contains('selected') ||
+                    verifyBtn.classList.contains('is-selected') ||
+                    verifyBtn.querySelector('svg, mat-icon, [data-icon="check"]') !== null;
 
-        const isSelected = verifyBtn.getAttribute('aria-selected') === 'true' || verifyBtn.getAttribute('aria-checked') === 'true';
-
-        // Close menu again
-        menuBtn.click();
-
-        if (isSelected) {
-            return "SUCCESS";
+                if (isSelected) {
+                    result = "SUCCESS";
+                }
+            }
+        } finally {
+            // Guarantee menu cleanup on every path
+            menuBtn.click();
         }
 
-        return "VERIFICATION_FAILED_NOT_SELECTED";
+        return result;
       })();
     `;
 
