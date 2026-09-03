@@ -57,11 +57,11 @@ To use this proxy in modern agents like OpenCode, specify an `openai-compatible`
         "baseURL": "http://127.0.0.1:8000/v1"
       },
       "models": {
-        "gemini-3.7-pro": "gemini-3.7-pro",
-        "gemini-3.7-flash": "gemini-3.7-flash",
-        "gemini-3.5-flash-lite": "gemini-3.5-flash-lite",
-        "gemini-1.5-pro": "gemini-1.5-pro",
-        "gemini-1.5-flash": "gemini-1.5-flash"
+        "gemini-3.7-flash": { "name": "gemini-3.7-flash" },
+        "gemini-3.1-pro": { "name": "gemini-3.1-pro" },
+        "gemini-3.5-flash-lite": { "name": "gemini-3.5-flash-lite" },
+        "gemini-2.5-pro": { "name": "gemini-2.5-pro" },
+        "gemini-2.5-flash": { "name": "gemini-2.5-flash" }
       }
     }
   },

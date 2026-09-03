@@ -64,7 +64,10 @@ export class StreamListener {
             // Await cleanup fully to ensure DOM state is clear before returning lock
             await this.cdp.send('Runtime.evaluate', { expression: cleanupScript, awaitPromise: true });
         } catch (e) {
-            // If the connection is already dead, evaluate will fail, but that's fine
+            // If the connection is already dead, evaluate will fail.
+            // When this happens, we invalidate the target ID so the next request is forced to reconnect
+            // and perform a full page reset, tearing down any orphaned state left in the browser.
+            this.cdp.targetId = null;
         }
     };
 
