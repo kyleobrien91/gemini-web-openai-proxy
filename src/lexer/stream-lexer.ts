@@ -21,95 +21,11 @@ export interface LexerOptions {
 
 type LexerState = 'TEXT' | 'IN_TOOL_CALL' | 'FAILED';
 
-export function isCloserPrefix(str: string): boolean {
-    if (!str) return false;
-    if (str[0] !== '<') return false;
-    if (str.length > 1 && str[1] !== '/') return false;
-    if (str.length <= 2) return true;
-
-    const remaining = str.substring(2).toLowerCase();
-    const tags = ['tool_call>', 'tool-call>', 'tool>', 'function_call>'];
-
-    for (const tag of tags) {
-        if (tag.startsWith(remaining)) {
-            return true;
-        }
-    }
-
-    return false;
-}
-
-export function isOpenerPrefix(str: string): boolean {
-    if (!str) return false;
-
-    let i = 0;
-
-    if (str[i] === '\n') i++;
-    if (i === str.length) return true;
-
-    if (str[i] === '`') {
-        i++;
-        if (i === str.length) return true;
-        if (str[i] === '`') {
-            i++;
-            if (i === str.length) return true;
-            if (str[i] === '`') {
-                i++;
-                if (i === str.length) return true;
-
-                let word = '';
-                while (i < str.length && str[i] !== ' ' && str[i] !== '\t' && str[i] !== '\n' && str[i] !== '<') {
-                    word += str[i];
-                    i++;
-                }
-
-                word = word.toLowerCase();
-
-                if (i === str.length) {
-                    if (word !== '' && !"xml".startsWith(word) && !"json".startsWith(word)) {
-                        return false;
-                    }
-                    return true;
-                } else {
-                    if (word !== '' && word !== 'xml' && word !== 'json') {
-                        return false;
-                    }
-                }
-
-                while(i < str.length && (str[i] === ' ' || str[i] === '\t')) i++;
-                if (i === str.length) return true;
-
-                if (str[i] === '\n') {
-                    i++;
-                }
-            } else {
-                return false;
-            }
-        } else {
-            return false;
-        }
-    }
-    if (i === str.length) return true;
-
-    if (str[i] !== '<') return false;
-    i++;
-    if (i === str.length) return true;
-
-    const remaining = str.substring(i).toLowerCase();
-    const tags = ['tool_call>', 'tool-call>', 'tool>', 'function_call>'];
-
-    for (const tag of tags) {
-        if (tag.startsWith(remaining)) {
-            return true;
-        }
-    }
-
-    return false;
-}
+const OPENER_TAGS = ['<tool_call>', '<tool-call>', '<tool>', '<function_call>'];
+const CLOSING_TAGS = ['</tool_call>', '</tool-call>', '</tool>', '</function_call>'];
 
 export class StreamLexer {
   private buffer = '';
-  private textLookahead = '';
   private scanIndex = 0;
   private stringQuote = '';
   private escapeNext = false;
@@ -120,165 +36,223 @@ export class StreamLexer {
   private hasEmittedTool = false;
   private state: LexerState = 'TEXT';
 
+  // Opener FSM State
+  private openerState = 0;
+  private openerMatchedText = '';
+  private openerTagMatchLen = 0;
+  private openerCandidates = OPENER_TAGS;
+  private openerLangWord = '';
+
+  // Closer FSM State
+  private closeState = 0;
+  private closeTagMatchLen = 0;
+  private closeCandidates = CLOSING_TAGS;
+  private closeMatchLength = 0;
+  private closeMatchStartIndex = -1;
+
   constructor(options: LexerOptions) {
     this.options = options;
   }
 
   processChunk(chunk: string) {
-    if (this.state === ('FAILED' as any)) {
-        return;
-    }
-
-    if (this.state === 'TEXT') {
-        this.textLookahead += chunk;
-        this.processTextLookahead();
-    } else if (this.state === 'IN_TOOL_CALL') {
-        this.buffer += chunk;
-        this.processToolCallBuffer();
-    }
-  }
-
-  private processTextLookahead() {
-    let advanced = true;
-    while (advanced && this.textLookahead.length > 0) {
-        advanced = false;
-
-        const match = this.textLookahead.match(/^(?:\n)?(?:```(?:xml|json)?\s*\n?)?(?:<tool[-_]?call>|<tool>|<function_call>)/i);
-        if (match) {
-            // If the match begins with a newline, that belongs to the preceding text, not the tool call
-            const leadingNewline = match[0].startsWith('\n') ? '\n' : '';
-            if (leadingNewline) {
-                this.options.onContent(leadingNewline);
-            }
-
-            const matchWithoutNewline = leadingNewline ? match[0].substring(1) : match[0];
-            const textAfterMatch = this.textLookahead.substring(match[0].length);
-
-            this.state = 'IN_TOOL_CALL';
-            this.buffer = matchWithoutNewline;
-            this.textLookahead = textAfterMatch;
-
-            // Reset tool call parsing state
-            this.scanIndex = this.buffer.length;
-            this.stringQuote = '';
-            this.escapeNext = false;
-
-            // The rest of textLookahead needs to be appended to buffer and processed as tool call!
-            if (this.textLookahead.length > 0) {
-                this.buffer += this.textLookahead;
-                this.textLookahead = '';
-            }
-
-            this.processToolCallBuffer();
-            return;
-        }
-
-        if (isOpenerPrefix(this.textLookahead)) {
-            // Guard: if the lookahead exceeds the maximum possible opener length,
-            // it cannot be an incomplete opener — flush a safe prefix to prevent O(n²) growth.
-            const MAX_OPENER_LENGTH = 24; // \n```xml\n<function_call> plus margin
-            if (this.textLookahead.length > MAX_OPENER_LENGTH) {
-                // Emit up to length - MAX_OPENER_LENGTH characters; they cannot be part of any opener
-                const safeFlushLength = this.textLookahead.length - MAX_OPENER_LENGTH;
-                this.options.onContent(this.textLookahead.substring(0, safeFlushLength));
-                this.textLookahead = this.textLookahead.substring(safeFlushLength);
-            }
-            break;
-        }
-
-        // We can safely emit characters that aren't part of any prefix.
-        // Instead of 1 by 1, let's find how many characters we can safely emit.
-        // We know textLookahead doesn't match the start of a tag.
-        // We can emit until we see a character that *could* start a prefix (`<`, `\n`, or `` ` ``).
-        let safeEnd = 1;
-        while (safeEnd < this.textLookahead.length) {
-            const c = this.textLookahead[safeEnd];
-            if (c === '<' || c === '\n' || c === '`') {
-                break;
-            }
-            safeEnd++;
-        }
-
-        // If safeEnd === 1, it means the very next character could be a start, or we only had 1 char.
-        // Check if the substring starting at safeEnd is a prefix. But actually, we already know
-        // that if we emit safeEnd chars, we'll loop and `isOpenerPrefix` will be called.
-        // So we can just emit and slice.
-
-        this.options.onContent(this.textLookahead.substring(0, safeEnd));
-        this.textLookahead = this.textLookahead.substring(safeEnd);
-        advanced = true;
-    }
-  }
-
-  private processToolCallBuffer() {
     if (this.state === ('FAILED' as any)) return;
-
-    if (this.buffer.length > 100000) {
-        if (this.options.onPushbackRequest) {
-            this.options.onPushbackRequest("Generated tool call exceeded maximum token length without closing tag. Please provide concise output.");
-        }
-        this.buffer = '';
-        this.state = 'FAILED';
-        return;
-    }
-
-    let closeIndex = -1;
-    let closeLength = 0;
-
-    for (; this.scanIndex < this.buffer.length; this.scanIndex++) {
-        const char = this.buffer[this.scanIndex];
-
-        if (this.escapeNext) {
-            this.escapeNext = false;
-            continue;
-        }
-
-        if (char === '\\') {
-            this.escapeNext = true;
-            continue;
-        }
-
-        if (this.stringQuote !== '') {
-            if (char === this.stringQuote) {
-                this.stringQuote = '';
-            }
-            continue;
-        }
-
-        if (char === '"' || char === "'") {
-            this.stringQuote = char;
-            continue;
-        }
-
-        if (this.stringQuote === '' && char === '<') {
-            const suffix = this.buffer.substring(this.scanIndex);
-            const match = suffix.match(/^(<\/tool[-_]?call>|<\/tool>|<\/function_call>)(?:\s*\n?```)?/i);
-            if (match) {
-                closeIndex = this.scanIndex;
-                closeLength = match[0].length;
-                break;
-            } else if (isCloserPrefix(suffix)) {
-                // It's a strict prefix of a closing tag, wait for more chunks
-                break;
-            }
+    for (const c of chunk) {
+        if (this.state === 'TEXT') {
+            this.processTextChar(c);
+        } else if (this.state === 'IN_TOOL_CALL') {
+            this.buffer += c;
+            this.processToolCallChar(c);
         }
     }
+  }
 
-    if (closeIndex !== -1) {
-        const fullToolCall = this.buffer.substring(0, closeIndex + closeLength);
-        this.processBufferedToolCall(fullToolCall);
+  private processTextChar(c: string) {
+     const cLower = c.toLowerCase();
+     this.openerMatchedText += c;
 
-        if (this.state === ('FAILED' as any)) {
-            this.buffer = '';
-            this.textLookahead = '';
-            return;
-        }
+     let failed = false;
 
-        this.textLookahead = this.buffer.substring(closeIndex + closeLength) + this.textLookahead;
-        this.buffer = '';
-        this.state = 'TEXT';
-        this.processTextLookahead();
-    }
+     if (this.openerState === 0) {
+         if (c === '\n') { this.openerState = 1; }
+         else if (c === '`') { this.openerState = 2; }
+         else if (c === '<') { this.openerState = 9; this.openerTagMatchLen = 1; this.openerCandidates = OPENER_TAGS; }
+         else {
+             this.options.onContent(c);
+             this.openerMatchedText = '';
+             return;
+         }
+     } else if (this.openerState === 1) {
+         if (c === '`') { this.openerState = 2; }
+         else if (c === '<') { this.openerState = 9; this.openerTagMatchLen = 1; this.openerCandidates = OPENER_TAGS; }
+         else { failed = true; }
+     } else if (this.openerState === 2) {
+         if (c === '`') { this.openerState = 3; }
+         else { failed = true; }
+     } else if (this.openerState === 3) {
+         if (c === '`') { this.openerState = 4; }
+         else { failed = true; }
+     } else if (this.openerState === 4) {
+         if (c === '\n') { this.openerState = 8; }
+         else if (c === '<') { this.openerState = 9; this.openerTagMatchLen = 1; this.openerCandidates = OPENER_TAGS; }
+         else if (c === ' ' || c === '\t') { this.openerState = 7; }
+         else if (/[a-z]/i.test(c)) { this.openerState = 5; this.openerLangWord = cLower; }
+         else { failed = true; }
+     } else if (this.openerState === 5) {
+         if (/[a-z]/i.test(c)) {
+             this.openerLangWord += cLower;
+             if (!"xml".startsWith(this.openerLangWord) && !"json".startsWith(this.openerLangWord)) {
+                 failed = true;
+             }
+         } else if (c === ' ' || c === '\t') {
+             if (this.openerLangWord === 'xml' || this.openerLangWord === 'json') { this.openerState = 7; }
+             else { failed = true; }
+         } else if (c === '\n') {
+             if (this.openerLangWord === 'xml' || this.openerLangWord === 'json') { this.openerState = 8; }
+             else { failed = true; }
+         } else if (c === '<') {
+             if (this.openerLangWord === 'xml' || this.openerLangWord === 'json') { this.openerState = 9; this.openerTagMatchLen = 1; this.openerCandidates = OPENER_TAGS; }
+             else { failed = true; }
+         } else {
+             failed = true;
+         }
+     } else if (this.openerState === 7) {
+         if (c === ' ' || c === '\t') { /* stay */ }
+         else if (c === '\n') { this.openerState = 8; }
+         else if (c === '<') { this.openerState = 9; this.openerTagMatchLen = 1; this.openerCandidates = OPENER_TAGS; }
+         else { failed = true; }
+     } else if (this.openerState === 8) {
+         if (c === '<') { this.openerState = 9; this.openerTagMatchLen = 1; this.openerCandidates = OPENER_TAGS; }
+         else { failed = true; }
+     } else if (this.openerState === 9) {
+         this.openerCandidates = this.openerCandidates.filter(t => t[this.openerTagMatchLen] === cLower);
+         if (this.openerCandidates.length > 0) {
+             this.openerTagMatchLen++;
+             if (this.openerCandidates.some(t => t.length === this.openerTagMatchLen)) {
+                 // MATCHED!
+                 const leadingNewline = this.openerMatchedText.startsWith('\n') ? '\n' : '';
+                 if (leadingNewline) {
+                     this.options.onContent(leadingNewline);
+                 }
+                 const matchWithoutNewline = leadingNewline ? this.openerMatchedText.substring(1) : this.openerMatchedText;
+
+                 this.state = 'IN_TOOL_CALL';
+                 this.buffer = matchWithoutNewline;
+
+                 this.openerState = 0;
+                 this.openerMatchedText = '';
+
+                 this.scanIndex = this.buffer.length;
+                 this.stringQuote = '';
+                 this.escapeNext = false;
+                 this.closeState = 0;
+                 return;
+             }
+         } else {
+             failed = true;
+         }
+     }
+
+     if (failed) {
+         this.options.onContent(this.openerMatchedText.slice(0, -1));
+         this.openerState = 0;
+         this.openerMatchedText = '';
+         this.processTextChar(c);
+     }
+  }
+
+  private processToolCallChar(c: string) {
+      this.scanIndex++;
+
+      if (this.buffer.length > 100000) {
+          if (this.options.onPushbackRequest) {
+              this.options.onPushbackRequest("Generated tool call exceeded maximum token length without closing tag. Please provide concise output.");
+          }
+          this.buffer = '';
+          this.state = 'FAILED';
+          return;
+      }
+
+      if (this.escapeNext) { this.escapeNext = false; return; }
+      if (c === '\\') { this.escapeNext = true; return; }
+      if (this.stringQuote !== '') {
+          if (c === this.stringQuote) this.stringQuote = '';
+          return;
+      }
+      if (c === '"' || c === "'") {
+          this.stringQuote = c;
+          return;
+      }
+
+      const cLower = c.toLowerCase();
+      let failed = false;
+
+      if (this.closeState === 0) {
+          if (c === '<') {
+              this.closeState = 1;
+              this.closeTagMatchLen = 1;
+              this.closeCandidates = CLOSING_TAGS;
+              this.closeMatchLength = 1;
+              this.closeMatchStartIndex = this.scanIndex - 1;
+          }
+      } else if (this.closeState === 1) {
+          this.closeCandidates = this.closeCandidates.filter(t => t[this.closeTagMatchLen] === cLower);
+          if (this.closeCandidates.length > 0) {
+              this.closeTagMatchLen++;
+              this.closeMatchLength++;
+              if (this.closeCandidates.some(t => t.length === this.closeTagMatchLen)) {
+                  this.closeState = 2; // Tag matched!
+              }
+          } else {
+              failed = true;
+          }
+      } else if (this.closeState === 2) {
+          if (c === ' ' || c === '\t') { this.closeMatchLength++; }
+          else if (c === '\n') { this.closeState = 3; this.closeMatchLength++; }
+          else if (c === '`') { this.closeState = 4; this.closeMatchLength++; }
+          else {
+              this.handleToolCallClose(this.closeMatchStartIndex, this.closeMatchLength);
+              return;
+          }
+      } else if (this.closeState === 3) {
+          if (c === '`') { this.closeState = 4; this.closeMatchLength++; }
+          else { this.handleToolCallClose(this.closeMatchStartIndex, this.closeMatchLength); return; }
+      } else if (this.closeState === 4) {
+          if (c === '`') { this.closeState = 5; this.closeMatchLength++; }
+          else { this.handleToolCallClose(this.closeMatchStartIndex, this.closeMatchLength); return; }
+      } else if (this.closeState === 5) {
+          if (c === '`') {
+              this.closeMatchLength++;
+              this.handleToolCallClose(this.closeMatchStartIndex, this.closeMatchLength);
+              return;
+          }
+          else { this.handleToolCallClose(this.closeMatchStartIndex, this.closeMatchLength); return; }
+      }
+
+      if (failed) {
+          this.closeState = c === '<' ? 1 : 0;
+          this.closeTagMatchLen = c === '<' ? 1 : 0;
+          this.closeCandidates = CLOSING_TAGS;
+          this.closeMatchLength = c === '<' ? 1 : 0;
+          if (c === '<') this.closeMatchStartIndex = this.scanIndex - 1;
+      }
+  }
+
+  private handleToolCallClose(closeIndex: number, closeLength: number) {
+      const fullToolCall = this.buffer.substring(0, closeIndex + closeLength);
+      this.processBufferedToolCall(fullToolCall);
+
+      if (this.state === 'FAILED') {
+          this.buffer = '';
+          return;
+      }
+
+      const remainder = this.buffer.substring(closeIndex + closeLength);
+      this.buffer = '';
+      this.state = 'TEXT';
+
+      for (const c of remainder) {
+          this.processTextChar(c);
+      }
   }
 
   private processBufferedToolCall(rawText: string) {
@@ -372,25 +346,22 @@ export class StreamLexer {
   }
 
   finish() {
-    if (this.state === 'TEXT') {
-        this.processTextLookahead();
-    } else if (this.state === 'IN_TOOL_CALL') {
-        this.processToolCallBuffer();
+    if (this.state === ('FAILED' as any)) return;
+
+    if (this.state === 'IN_TOOL_CALL') {
+        if (this.closeState >= 2) {
+             // We were matching trailing markdown, but the tool call tag itself is complete!
+             this.handleToolCallClose(this.closeMatchStartIndex, this.closeMatchLength);
+        } else if (this.buffer.length > 0) {
+             this.processBufferedToolCall(this.buffer);
+             this.buffer = '';
+        }
+    } else if (this.state === 'TEXT' && this.openerMatchedText.length > 0) {
+        this.options.onContent(this.openerMatchedText);
+        this.openerMatchedText = '';
     }
 
-    if (this.state === ('FAILED' as any)) {
-        return;
-    }
-
-    if (this.state === 'IN_TOOL_CALL' && this.buffer.length > 0) {
-        this.processBufferedToolCall(this.buffer);
-        this.buffer = '';
-    } else if (this.state === 'TEXT' && this.textLookahead.length > 0) {
-        this.options.onContent(this.textLookahead);
-        this.textLookahead = '';
-    }
-
-    if (this.state !== ('FAILED' as any)) {
+    if (this.state !== 'FAILED') {
         this.options.onFinished(this.hasEmittedTool ? 'tool_calls' : 'stop');
     }
   }
