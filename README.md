@@ -46,12 +46,26 @@ You can customize the proxy using environment variables or a `.env` file:
 
 ## OpenCode Configuration Snippet
 
-To use this proxy in OpenCode, update your `~/.opencode/config.json`:
+To use this proxy in modern agents like OpenCode, specify an `openai-compatible` custom provider in your `~/.opencode/config.json`:
 
 ```json
 {
-  "apiHost": "http://127.0.0.1:8000/v1",
-  "defaultModel": "gemini-3.7-flash"
+  "provider": {
+    "gemini-proxy": {
+      "npm": "@ai-sdk/openai-compatible",
+      "options": {
+        "baseURL": "http://127.0.0.1:8000/v1"
+      },
+      "models": {
+        "gemini-3.7-pro": "gemini-3.7-pro",
+        "gemini-3.7-flash": "gemini-3.7-flash",
+        "gemini-3.5-flash-lite": "gemini-3.5-flash-lite",
+        "gemini-1.5-pro": "gemini-1.5-pro",
+        "gemini-1.5-flash": "gemini-1.5-flash"
+      }
+    }
+  },
+  "model": "gemini-proxy/gemini-3.7-flash"
 }
 ```
 

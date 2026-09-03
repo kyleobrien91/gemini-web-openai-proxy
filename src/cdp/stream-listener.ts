@@ -56,6 +56,7 @@ export class StreamListener {
                if (state.submitInterval) {
                    clearInterval(state.submitInterval);
                }
+               delete window["__proxyTurn_" + "${turnId}"];
            }
         `;
 
