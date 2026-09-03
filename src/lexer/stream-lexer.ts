@@ -21,188 +21,238 @@ export interface LexerOptions {
 
 type LexerState = 'TEXT' | 'IN_TOOL_CALL' | 'FAILED';
 
+const OPENER_TAGS = ['<tool_call>', '<tool-call>', '<tool>', '<function_call>'];
+const CLOSING_TAGS = ['</tool_call>', '</tool-call>', '</tool>', '</function_call>'];
+
 export class StreamLexer {
   private buffer = '';
+  private scanIndex = 0;
+  private stringQuote = '';
+  private escapeNext = false;
+
   private toolCallIndex = 0;
   private currentToolId = '';
   private options: LexerOptions;
   private hasEmittedTool = false;
   private state: LexerState = 'TEXT';
 
+  // Opener FSM State
+  private openerState = 0;
+  private openerMatchedText = '';
+  private openerTagMatchLen = 0;
+  private openerCandidates = OPENER_TAGS;
+  private openerLangWord = '';
+
+  // Closer FSM State
+  private closeState = 0;
+  private closeTagMatchLen = 0;
+  private closeCandidates = CLOSING_TAGS;
+  private closeMatchLength = 0;
+  private closeMatchStartIndex = -1;
+
   constructor(options: LexerOptions) {
     this.options = options;
   }
 
   processChunk(chunk: string) {
-    this.buffer += chunk;
-    this.processBuffer();
+    if (this.state === ('FAILED' as any)) return;
+    for (const c of chunk) {
+        if (this.state === 'TEXT') {
+            this.processTextChar(c);
+        } else if (this.state === 'IN_TOOL_CALL') {
+            this.buffer += c;
+            this.processToolCallChar(c);
+        }
+    }
   }
 
-  private processBuffer() {
-    let advanced = true;
-    while (advanced && this.buffer.length > 0) {
-      advanced = false;
+  private processTextChar(c: string) {
+     const cLower = c.toLowerCase();
+     this.openerMatchedText += c;
 
-      if (this.state === 'FAILED') {
-          this.buffer = ''; // Discard everything
+     let failed = false;
+
+     if (this.openerState === 0) {
+         if (c === '\n') { this.openerState = 1; }
+         else if (c === '`') { this.openerState = 2; }
+         else if (c === '<') { this.openerState = 9; this.openerTagMatchLen = 1; this.openerCandidates = OPENER_TAGS; }
+         else {
+             this.options.onContent(c);
+             this.openerMatchedText = '';
+             return;
+         }
+     } else if (this.openerState === 1) {
+         if (c === '`') { this.openerState = 2; }
+         else if (c === '<') { this.openerState = 9; this.openerTagMatchLen = 1; this.openerCandidates = OPENER_TAGS; }
+         else { failed = true; }
+     } else if (this.openerState === 2) {
+         if (c === '`') { this.openerState = 3; }
+         else { failed = true; }
+     } else if (this.openerState === 3) {
+         if (c === '`') { this.openerState = 4; }
+         else { failed = true; }
+     } else if (this.openerState === 4) {
+         if (c === '\n') { this.openerState = 8; }
+         else if (c === '<') { this.openerState = 9; this.openerTagMatchLen = 1; this.openerCandidates = OPENER_TAGS; }
+         else if (c === ' ' || c === '\t') { this.openerState = 7; }
+         else if (/[a-z]/i.test(c)) { this.openerState = 5; this.openerLangWord = cLower; }
+         else { failed = true; }
+     } else if (this.openerState === 5) {
+         if (/[a-z]/i.test(c)) {
+             this.openerLangWord += cLower;
+             if (!"xml".startsWith(this.openerLangWord) && !"json".startsWith(this.openerLangWord)) {
+                 failed = true;
+             }
+         } else if (c === ' ' || c === '\t') {
+             if (this.openerLangWord === 'xml' || this.openerLangWord === 'json') { this.openerState = 7; }
+             else { failed = true; }
+         } else if (c === '\n') {
+             if (this.openerLangWord === 'xml' || this.openerLangWord === 'json') { this.openerState = 8; }
+             else { failed = true; }
+         } else if (c === '<') {
+             if (this.openerLangWord === 'xml' || this.openerLangWord === 'json') { this.openerState = 9; this.openerTagMatchLen = 1; this.openerCandidates = OPENER_TAGS; }
+             else { failed = true; }
+         } else {
+             failed = true;
+         }
+     } else if (this.openerState === 7) {
+         if (c === ' ' || c === '\t') { /* stay */ }
+         else if (c === '\n') { this.openerState = 8; }
+         else if (c === '<') { this.openerState = 9; this.openerTagMatchLen = 1; this.openerCandidates = OPENER_TAGS; }
+         else { failed = true; }
+     } else if (this.openerState === 8) {
+         if (c === '<') { this.openerState = 9; this.openerTagMatchLen = 1; this.openerCandidates = OPENER_TAGS; }
+         else { failed = true; }
+     } else if (this.openerState === 9) {
+         this.openerCandidates = this.openerCandidates.filter(t => t[this.openerTagMatchLen] === cLower);
+         if (this.openerCandidates.length > 0) {
+             this.openerTagMatchLen++;
+             if (this.openerCandidates.some(t => t.length === this.openerTagMatchLen)) {
+                 // MATCHED!
+                 const leadingNewline = this.openerMatchedText.startsWith('\n') ? '\n' : '';
+                 if (leadingNewline) {
+                     this.options.onContent(leadingNewline);
+                 }
+                 const matchWithoutNewline = leadingNewline ? this.openerMatchedText.substring(1) : this.openerMatchedText;
+
+                 this.state = 'IN_TOOL_CALL';
+                 this.buffer = matchWithoutNewline;
+
+                 this.openerState = 0;
+                 this.openerMatchedText = '';
+
+                 this.scanIndex = this.buffer.length;
+                 this.stringQuote = '';
+                 this.escapeNext = false;
+                 this.closeState = 0;
+                 return;
+             }
+         } else {
+             failed = true;
+         }
+     }
+
+     if (failed) {
+         this.options.onContent(this.openerMatchedText.slice(0, -1));
+         this.openerState = 0;
+         this.openerMatchedText = '';
+         this.processTextChar(c);
+     }
+  }
+
+  private processToolCallChar(c: string) {
+      this.scanIndex++;
+
+      if (this.buffer.length > 100000) {
+          if (this.options.onPushbackRequest) {
+              this.options.onPushbackRequest("Generated tool call exceeded maximum token length without closing tag. Please provide concise output.");
+          }
+          this.buffer = '';
+          this.state = 'FAILED';
           return;
       }
 
-      if (this.state === 'TEXT') {
-          // In TEXT state, we are looking for the start of a tool call or markdown fence.
-          // To safely flush text without dropping incomplete tool call openers, we look for potential start sequences.
-          // Instead of regex over the whole string, we scan for the first < or ```.
+      if (this.escapeNext) { this.escapeNext = false; return; }
+      if (c === '\\') { this.escapeNext = true; return; }
+      if (this.stringQuote !== '') {
+          if (c === this.stringQuote) this.stringQuote = '';
+          return;
+      }
+      if (c === '"' || c === "'") {
+          this.stringQuote = c;
+          return;
+      }
 
-          let potentialStartIdx = -1;
-          for (let i = 0; i < this.buffer.length; i++) {
-              if (this.buffer[i] === '<' || (this.buffer.startsWith('```', i))) {
-                  // It's a potential start. We need to check if it actually forms a valid start,
-                  // or if it's incomplete at the end of the buffer.
+      const cLower = c.toLowerCase();
+      let failed = false;
 
-                  const suffix = this.buffer.substring(i);
-                  const isStartOfTag =
-                      '<tool_call>'.startsWith(suffix) ||
-                      '<tool-call>'.startsWith(suffix) ||
-                      '<tool>'.startsWith(suffix) ||
-                      '<function_call>'.startsWith(suffix);
-
-                  const isStartOfMd =
-                      '```xml\n<'.startsWith(suffix) ||
-                      '```json\n<'.startsWith(suffix) ||
-                      '```\n<'.startsWith(suffix) ||
-                      '```'.startsWith(suffix) ||
-                      '\n```'.startsWith(suffix);
-
-                  const completeTagMatch = suffix.match(/^(?:\n)?(?:```(?:xml|json)?\s*\n?)?(<tool[-_]?call>|<tool>|<function_call>)/i);
-
-                  if (completeTagMatch || isStartOfTag || isStartOfMd) {
-                      potentialStartIdx = i;
-                      break;
-                  }
-              }
+      if (this.closeState === 0) {
+          if (c === '<') {
+              this.closeState = 1;
+              this.closeTagMatchLen = 1;
+              this.closeCandidates = CLOSING_TAGS;
+              this.closeMatchLength = 1;
+              this.closeMatchStartIndex = this.scanIndex - 1;
           }
-
-          if (potentialStartIdx === -1) {
-              // No potential starts found anywhere. Safe to flush entirely.
-              if (this.buffer.length > 100000) {
-                  // Just for general safety, though plain text doesn't strictly need it, it avoids OOM.
-                  this.options.onContent(this.buffer);
-                  this.buffer = '';
-                  return;
+      } else if (this.closeState === 1) {
+          this.closeCandidates = this.closeCandidates.filter(t => t[this.closeTagMatchLen] === cLower);
+          if (this.closeCandidates.length > 0) {
+              this.closeTagMatchLen++;
+              this.closeMatchLength++;
+              if (this.closeCandidates.some(t => t.length === this.closeTagMatchLen)) {
+                  this.closeState = 2; // Tag matched!
               }
-              this.options.onContent(this.buffer);
-              this.buffer = '';
-              return; // We consumed everything
-          } else if (potentialStartIdx > 0) {
-              // We found a potential start, flush everything before it
-              this.options.onContent(this.buffer.substring(0, potentialStartIdx));
-              this.buffer = this.buffer.substring(potentialStartIdx);
-              advanced = true;
-              continue;
           } else {
-              // potentialStartIdx === 0. The buffer *starts* with a potential tag or markdown fence.
-              // Check if it's a complete opener.
-              const match = this.buffer.match(/^(?:\n)?(?:```(?:xml|json)?\s*\n?)?(<tool[-_]?call>|<tool>|<function_call>)/i);
-
-              if (match) {
-                  // We have a committed tool call opener!
-                  // Transition state, do NOT flush this text.
-                  this.state = 'IN_TOOL_CALL';
-                  advanced = true;
-                  continue; // Loop will restart in IN_TOOL_CALL state
-              } else {
-                  // It's incomplete. We must wait for more chunks to see if it becomes a valid tag.
-                  // Wait, what if it's just a lone '<' at the end of the chunk?
-                  // If buffer length > e.g. 50, and it hasn't completed a tag, it's probably not a tag.
-                  // But 'isStartOfTag' guarantees it *could* be a tag based on the suffix matching prefix.
-                  // Since potentialStartIdx === 0, the ENTIRE buffer is a prefix of a tag (e.g. "<tool").
-                  // We just wait.
-                  break;
-              }
+              failed = true;
           }
-      } else if (this.state === 'IN_TOOL_CALL') {
-          // We are actively inside a tool call. The buffer starts with the tool call opener.
-          // Look for the closing tag.
-
-          if (this.buffer.length > 100000) {
-              // Safety guard: A committed tool-call candidate exceeded the limit.
-              // Trigger pushback/error and discard. DO NOT flush as assistant text.
-              if (this.options.onPushbackRequest) {
-                  this.options.onPushbackRequest("Generated tool call exceeded maximum token length without closing tag. Please provide concise output.");
-              }
-              this.buffer = ''; // Discard the malformed candidate entirely
-              this.state = 'FAILED';
+      } else if (this.closeState === 2) {
+          if (c === ' ' || c === '\t') { this.closeMatchLength++; }
+          else if (c === '\n') { this.closeState = 3; this.closeMatchLength++; }
+          else if (c === '`') { this.closeState = 4; this.closeMatchLength++; }
+          else {
+              this.handleToolCallClose(this.closeMatchStartIndex, this.closeMatchLength);
               return;
           }
-
-
-          // Find the closing tag, but ignore it if it's inside a JSON string.
-          let closeIndex = -1;
-          let closeLength = 0;
-          let stringQuote = ''; // Tracks the active quote character ('"' or "'")
-          let escapeNext = false;
-
-          for (let i = 0; i < this.buffer.length; i++) {
-              const char = this.buffer[i];
-
-              if (escapeNext) {
-                  escapeNext = false;
-                  continue;
-              }
-
-              if (char === '\\') {
-                  escapeNext = true;
-                  continue;
-              }
-
-              if (stringQuote !== '') {
-                  // Inside a string, only exit if we see the matching quote
-                  if (char === stringQuote) {
-                      stringQuote = '';
-                  }
-                  continue;
-              }
-
-              if (char === '"' || char === "'") {
-                  stringQuote = char;
-                  continue;
-              }
-
-              if (stringQuote === '' && char === '<') {
-                  const suffix = this.buffer.substring(i);
-                  const match = suffix.match(/^(<\/tool[-_]?call>|<\/tool>|<\/function_call>)(?:\s*\n?```)?/i);
-                  if (match) {
-                      closeIndex = i;
-                      closeLength = match[0].length;
-                      break;
-                  }
-              }
+      } else if (this.closeState === 3) {
+          if (c === '`') { this.closeState = 4; this.closeMatchLength++; }
+          else { this.handleToolCallClose(this.closeMatchStartIndex, this.closeMatchLength); return; }
+      } else if (this.closeState === 4) {
+          if (c === '`') { this.closeState = 5; this.closeMatchLength++; }
+          else { this.handleToolCallClose(this.closeMatchStartIndex, this.closeMatchLength); return; }
+      } else if (this.closeState === 5) {
+          if (c === '`') {
+              this.closeMatchLength++;
+              this.handleToolCallClose(this.closeMatchStartIndex, this.closeMatchLength);
+              return;
           }
-
-          if (closeIndex !== -1) {
-              // We found the end!
-              const fullToolCall = this.buffer.substring(0, closeIndex + closeLength);
-
-              // Process it
-              this.processBufferedToolCall(fullToolCall);
-
-              if (this.state === ('FAILED' as any)) {
-                  this.buffer = '';
-                  return;
-              }
-
-              // Reset buffer to whatever comes after the tool call
-              this.buffer = this.buffer.substring(closeIndex + closeLength);
-              this.state = 'TEXT'; // Back to text mode
-              advanced = true;
-              continue;
-          } else {
-              // Still waiting for closing tag.
-              break;
-          }
-
+          else { this.handleToolCallClose(this.closeMatchStartIndex, this.closeMatchLength); return; }
       }
-    }
+
+      if (failed) {
+          this.closeState = c === '<' ? 1 : 0;
+          this.closeTagMatchLen = c === '<' ? 1 : 0;
+          this.closeCandidates = CLOSING_TAGS;
+          this.closeMatchLength = c === '<' ? 1 : 0;
+          if (c === '<') this.closeMatchStartIndex = this.scanIndex - 1;
+      }
+  }
+
+  private handleToolCallClose(closeIndex: number, closeLength: number) {
+      const fullToolCall = this.buffer.substring(0, closeIndex + closeLength);
+      this.processBufferedToolCall(fullToolCall);
+
+      if (this.state === 'FAILED') {
+          this.buffer = '';
+          return;
+      }
+
+      const remainder = this.buffer.substring(closeIndex + closeLength);
+      this.buffer = '';
+      this.state = 'TEXT';
+
+      for (const c of remainder) {
+          this.processTextChar(c);
+      }
   }
 
   private processBufferedToolCall(rawText: string) {
@@ -296,26 +346,22 @@ export class StreamLexer {
   }
 
   finish() {
-    this.processBuffer();
+    if (this.state === ('FAILED' as any)) return;
 
-    if (this.state === 'FAILED') {
-        // Do not emit a successful completion
-        // The router will handle erroring out the stream.
-        return;
+    if (this.state === 'IN_TOOL_CALL') {
+        if (this.closeState >= 2) {
+             // We were matching trailing markdown, but the tool call tag itself is complete!
+             this.handleToolCallClose(this.closeMatchStartIndex, this.closeMatchLength);
+        } else if (this.buffer.length > 0) {
+             this.processBufferedToolCall(this.buffer);
+             this.buffer = '';
+        }
+    } else if (this.state === 'TEXT' && this.openerMatchedText.length > 0) {
+        this.options.onContent(this.openerMatchedText);
+        this.openerMatchedText = '';
     }
 
-    // If the stream ends and we are stuck in IN_TOOL_CALL, it's malformed/unclosed.
-    // Try to recover it by forcibly closing it.
-    if (this.state === 'IN_TOOL_CALL' && this.buffer.length > 0) {
-        this.processBufferedToolCall(this.buffer);
-        this.buffer = '';
-    } else if (this.state === 'TEXT' && this.buffer.length > 0) {
-        // Just leftover normal text that looked like a start tag
-        this.options.onContent(this.buffer);
-        this.buffer = '';
-    }
-
-    if (this.state !== ('FAILED' as any)) {
+    if (this.state !== 'FAILED') {
         this.options.onFinished(this.hasEmittedTool ? 'tool_calls' : 'stop');
     }
   }
