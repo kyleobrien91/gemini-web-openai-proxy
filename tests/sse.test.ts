@@ -15,7 +15,7 @@ describe('SSE Utilities', () => {
   });
 
   it('should create tool header chunk', () => {
-    const chunk = createToolHeaderChunk('id1', 'model1', 0, 'call_1', 'my_tool', true);
+    const chunk = createToolHeaderChunk('id1', 'model1', 0, 'call_1', 'my_tool');
     expect(chunk.choices[0].delta.role).toBe('assistant');
     expect(chunk.choices[0].delta.tool_calls?.[0].index).toBe(0);
     expect(chunk.choices[0].delta.tool_calls?.[0].id).toBe('call_1');

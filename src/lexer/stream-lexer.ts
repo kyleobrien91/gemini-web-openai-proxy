@@ -27,11 +27,11 @@ export function isCloserPrefix(str: string): boolean {
     if (str.length > 1 && str[1] !== '/') return false;
     if (str.length <= 2) return true;
 
-    const remaining = str.substring(2);
+    const remaining = str.substring(2).toLowerCase();
     const tags = ['tool_call>', 'tool-call>', 'tool>', 'function_call>'];
 
     for (const tag of tags) {
-        if (tag.startsWith(remaining) || remaining.startsWith(tag)) {
+        if (tag.startsWith(remaining)) {
             return true;
         }
     }
@@ -63,6 +63,8 @@ export function isOpenerPrefix(str: string): boolean {
                     i++;
                 }
 
+                word = word.toLowerCase();
+
                 if (i === str.length) {
                     if (word !== '' && !"xml".startsWith(word) && !"json".startsWith(word)) {
                         return false;
@@ -93,7 +95,7 @@ export function isOpenerPrefix(str: string): boolean {
     i++;
     if (i === str.length) return true;
 
-    const remaining = str.substring(i);
+    const remaining = str.substring(i).toLowerCase();
     const tags = ['tool_call>', 'tool-call>', 'tool>', 'function_call>'];
 
     for (const tag of tags) {
@@ -143,9 +145,18 @@ export class StreamLexer {
 
         const match = this.textLookahead.match(/^(?:\n)?(?:```(?:xml|json)?\s*\n?)?(?:<tool[-_]?call>|<tool>|<function_call>)/i);
         if (match) {
+            // If the match begins with a newline, that belongs to the preceding text, not the tool call
+            const leadingNewline = match[0].startsWith('\n') ? '\n' : '';
+            if (leadingNewline) {
+                this.options.onContent(leadingNewline);
+            }
+
+            const matchWithoutNewline = leadingNewline ? match[0].substring(1) : match[0];
+            const textAfterMatch = this.textLookahead.substring(match[0].length);
+
             this.state = 'IN_TOOL_CALL';
-            this.buffer = this.textLookahead.substring(0, match[0].length);
-            this.textLookahead = this.textLookahead.substring(match[0].length);
+            this.buffer = matchWithoutNewline;
+            this.textLookahead = textAfterMatch;
 
             // Reset tool call parsing state
             this.scanIndex = this.buffer.length;
@@ -163,7 +174,15 @@ export class StreamLexer {
         }
 
         if (isOpenerPrefix(this.textLookahead)) {
-            // It's a strict prefix, wait for more characters
+            // Guard: if the lookahead exceeds the maximum possible opener length,
+            // it cannot be an incomplete opener — flush a safe prefix to prevent O(n²) growth.
+            const MAX_OPENER_LENGTH = 24; // \n```xml\n<function_call> plus margin
+            if (this.textLookahead.length > MAX_OPENER_LENGTH) {
+                // Emit up to length - MAX_OPENER_LENGTH characters; they cannot be part of any opener
+                const safeFlushLength = this.textLookahead.length - MAX_OPENER_LENGTH;
+                this.options.onContent(this.textLookahead.substring(0, safeFlushLength));
+                this.textLookahead = this.textLookahead.substring(safeFlushLength);
+            }
             break;
         }
 
