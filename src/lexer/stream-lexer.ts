@@ -20,7 +20,6 @@ export interface LexerOptions {
 }
 
 export class StreamLexer {
-  private state: 'TEXT' | 'BUFFERING' | 'TOOL_CALL' = 'TEXT';
   private buffer = '';
   private toolCallIndex = 0;
   private currentToolId = '';
@@ -32,63 +31,94 @@ export class StreamLexer {
   }
 
   processChunk(chunk: string) {
-    let textBuffer = '';
-
-    const flushText = () => {
-      if (textBuffer) {
-        this.options.onContent(textBuffer);
-        textBuffer = '';
-      }
-    };
-
-    for (const char of chunk) {
-      if (this.state === 'TEXT') {
-        if (char === '<') {
-          flushText();
-          this.state = 'BUFFERING';
-          this.buffer = char;
-        } else {
-          textBuffer += char;
-        }
-      } else if (this.state === 'BUFFERING') {
-        this.buffer += char;
-
-        const tagPrefix = '<tool_call>';
-        if (tagPrefix.startsWith(this.buffer)) {
-          if (this.buffer === tagPrefix) {
-            this.state = 'TOOL_CALL';
-            // Do not clear the buffer, keep `<tool_call>` in it so parsing regex works
-          }
-        } else if ('<tool-call>'.startsWith(this.buffer) || '<tool>'.startsWith(this.buffer) || '<function_call>'.startsWith(this.buffer)) {
-           // Allow fuzzy tag starts, they will be handled when the tag is fully parsed
-           if (this.buffer === '<tool-call>' || this.buffer === '<tool>' || this.buffer === '<function_call>') {
-              this.state = 'TOOL_CALL';
-           }
-        } else {
-          // False alarm, flush buffer and return to text
-          textBuffer += this.buffer;
-          this.buffer = '';
-          this.state = 'TEXT';
-        }
-      } else if (this.state === 'TOOL_CALL') {
-        this.buffer += char;
-        if (this.buffer.endsWith('</tool_call>') || this.buffer.endsWith('</tool-call>') || this.buffer.endsWith('</tool>') || this.buffer.endsWith('</function_call>')) {
-          this.processBufferedToolCall();
-          this.state = 'TEXT';
-          this.buffer = '';
-        }
-      }
-    }
-
-    flushText();
+    this.buffer += chunk;
+    this.processBuffer();
   }
 
-  private processBufferedToolCall() {
-    let contentToParse = this.buffer;
+  private processBuffer() {
+    let advanced = true;
+    while (advanced && this.buffer.length > 0) {
+      advanced = false;
+
+      // 1. Look for a complete markdown block or tool call tag
+      // Matches:
+      // textBefore
+      // optional markdown start (```xml)
+      // <tool_call>...</tool_call>
+      // optional markdown end (```)
+      const pattern = /([\s\S]*?)(?:^|\n)?(?:```(?:xml|json)?\s*\n?)?(<tool[-_]?call>|<tool>|<function_call>)([\s\S]*?)(<\/tool[-_]?call>|<\/tool>|<\/function_call>)(?:\s*\n?```)?/i;
+      const mdToolMatch = this.buffer.match(pattern);
+
+      if (mdToolMatch && mdToolMatch.index !== undefined) {
+          const textBefore = mdToolMatch[1];
+          const fullMatch = mdToolMatch[0];
+          const startTag = mdToolMatch[2];
+          const content = mdToolMatch[3];
+          const endTag = mdToolMatch[4];
+          const rawToolCall = startTag + content + endTag;
+
+          if (textBefore) {
+              this.options.onContent(textBefore);
+          }
+
+          this.processBufferedToolCall(rawToolCall);
+
+          this.buffer = this.buffer.substring(mdToolMatch.index + fullMatch.length);
+          advanced = true;
+          continue;
+      }
+
+      // 2. Look for an INCOMPLETE tool call or markdown fence at the END of the buffer
+      const incompletePattern = /(?:^|\n)(?:```(?:xml|json)?\s*\n?)?(<tool[-_]?call>|<tool>|<function_call>)[\s\S]*$/i;
+      const incompleteMatch = this.buffer.match(incompletePattern);
+
+      if (incompleteMatch && incompleteMatch.index !== undefined) {
+         const textBefore = this.buffer.substring(0, incompleteMatch.index);
+         if (textBefore) {
+             this.options.onContent(textBefore);
+             this.buffer = this.buffer.substring(incompleteMatch.index);
+         }
+         break;
+      }
+
+      // 3. Look for an INCOMPLETE potential start sequence
+      let flushUpTo = this.buffer.length;
+      for (let i = this.buffer.length - 1; i >= 0; i--) {
+          const suffix = this.buffer.substring(i);
+          if (
+              '<tool_call>'.startsWith(suffix) ||
+              '<tool-call>'.startsWith(suffix) ||
+              '<tool>'.startsWith(suffix) ||
+              '<function_call>'.startsWith(suffix) ||
+              '```xml\n<'.startsWith(suffix) ||
+              '```json\n<'.startsWith(suffix) ||
+              '```\n<'.startsWith(suffix) ||
+              '```'.startsWith(suffix) ||
+              '\n```'.startsWith(suffix)
+          ) {
+              flushUpTo = i;
+          } else {
+              break;
+          }
+      }
+
+      if (flushUpTo > 0 && flushUpTo < this.buffer.length) {
+          this.options.onContent(this.buffer.substring(0, flushUpTo));
+          this.buffer = this.buffer.substring(flushUpTo);
+          advanced = true; // Though we don't need to continue since flushUpTo < buffer.length means it hit the break above
+      } else if (flushUpTo === this.buffer.length) {
+          // Entire buffer is safe to flush
+          this.options.onContent(this.buffer);
+          this.buffer = '';
+      }
+    }
+  }
+
+  private processBufferedToolCall(rawText: string) {
+    let contentToParse = rawText;
     contentToParse = fuzzyTagRepair(contentToParse);
     contentToParse = stripMarkdown(contentToParse);
 
-    // Extract JSON between tags
     const match = contentToParse.match(/<tool_call>([\s\S]*?)<\/tool_call>/);
     if (!match) {
         if (this.options.onPushbackRequest) {
@@ -101,9 +131,7 @@ export class StreamLexer {
     const parsed = tryParseJSON(jsonStr);
 
     if (parsed && typeof parsed === 'object' && parsed.name) {
-
       let matchedTool: Tool | undefined;
-      // Strict Validation: Unknown Tool
       if (this.options.allowedTools && this.options.allowedTools.length > 0) {
           matchedTool = this.options.allowedTools.find(t => t.function.name === parsed.name);
           if (!matchedTool) {
@@ -113,14 +141,12 @@ export class StreamLexer {
                return;
           }
       } else {
-         // If no tools were allowed but a tool call was generated, reject it
          if (this.options.onPushbackRequest) {
              this.options.onPushbackRequest(`You attempted to call a tool ('${parsed.name}'), but no tools are available. Please respond with regular text.`);
          }
          return;
       }
 
-      // Strict Validation: Invalid arguments object
       if (parsed.arguments && typeof parsed.arguments !== 'object') {
            if (this.options.onPushbackRequest) {
                this.options.onPushbackRequest(`The arguments for tool '${parsed.name}' must be a valid JSON object.`);
@@ -128,7 +154,6 @@ export class StreamLexer {
            return;
       }
 
-      // Real JSON Schema Validation via AJV
       if (matchedTool?.function?.parameters) {
           try {
               const validate = ajv.compile(matchedTool.function.parameters);
@@ -142,8 +167,6 @@ export class StreamLexer {
               }
           } catch (e: any) {
               console.error("AJV compilation/validation error:", e);
-              // If the client gave us a totally malformed JSON schema that AJV can't compile,
-              // we can't validate it properly, but we should err on the side of caution.
               if (this.options.onPushbackRequest) {
                    this.options.onPushbackRequest(`Internal schema compilation failed for tool '${parsed.name}'. Check tool schema.`);
               }
@@ -167,11 +190,16 @@ export class StreamLexer {
   }
 
   finish() {
-    if (this.state === 'BUFFERING') {
-      this.options.onContent(this.buffer);
-    } else if (this.state === 'TOOL_CALL') {
-      this.processBufferedToolCall();
+    this.processBuffer();
+    if (this.buffer.length > 0) {
+        if (this.buffer.match(/(<tool[-_]?call>|<tool>|<function_call>)/i)) {
+            this.processBufferedToolCall(this.buffer);
+        } else {
+            this.options.onContent(this.buffer);
+        }
+        this.buffer = '';
     }
+
     this.options.onFinished(this.hasEmittedTool ? 'tool_calls' : 'stop');
   }
 }

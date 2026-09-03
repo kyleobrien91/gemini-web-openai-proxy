@@ -8,15 +8,12 @@ import { createContentChunk, createToolHeaderChunk, createToolArgChunk, createDo
 import { browserWorker } from '../cdp/browser.js';
 import { config } from '../config.js';
 import { Mutex } from '../utils/mutex.js';
+import { getModel } from '../models/registry.js';
 
 const router = Router();
 const routeMutex = new Mutex(); // Global mutex for the route
 
-// Valid model mapping for strict checking
-const validModels = [
-    'gemini-3.7-flash', 'gemini-3.1-pro', 'gemini-3.5-flash-lite',
-    'gemini-2.5-pro', 'gemini-2.5-flash'
-];
+
 
 router.post('/v1/chat/completions', async (req, res) => {
   let timeoutId: NodeJS.Timeout | undefined;
@@ -35,7 +32,7 @@ router.post('/v1/chat/completions', async (req, res) => {
     }
 
     // Model validation
-    if (!validModels.includes(request.model)) {
+    if (!getModel(request.model)) {
         return res.status(400).json({ error: { message: `Unknown model: ${request.model}` } });
     }
 
@@ -93,20 +90,22 @@ router.post('/v1/chat/completions', async (req, res) => {
           let currentToolCall: any = null;
           let stopReason: 'stop' | 'tool_calls' = 'stop';
           let reflectionReason: string | null = null;
+          let isFirstChunk = true;
 
           const lexer = new StreamLexer({
             allowedTools,
             onContent: (content) => {
               if (isStream) {
-                // Note: Reflection retries with streaming are disabled entirely to prevent interleaved output
-                res.write(formatSSE(createContentChunk(chatId, model, content)));
+                res.write(formatSSE(createContentChunk(chatId, model, content, isFirstChunk)));
+                isFirstChunk = false;
               } else {
                  bufferedContent += content;
               }
             },
             onToolCallStart: (index, id, name) => {
               if (isStream) {
-                res.write(formatSSE(createToolHeaderChunk(chatId, model, index, id, name)));
+                res.write(formatSSE(createToolHeaderChunk(chatId, model, index, id, name, isFirstChunk)));
+                isFirstChunk = false;
               } else {
                   currentToolCall = {
                       index, id, type: 'function', function: { name, arguments: '' }
@@ -191,15 +190,16 @@ router.post('/v1/chat/completions', async (req, res) => {
 
             if (signal.aborted && process.env.NODE_ENV !== 'test') throw new Error("Request cancelled or timed out");
 
-            // Only retry in non-streaming mode to prevent SSE chunk corruption
-            if (turnResult.reflectionReason && retries < config.maxRetries && !isStream) {
+            // Allow retry in streaming mode because StreamLexer buffers and drops invalid tool calls
+            // before emitting them to the SSE stream.
+            if (turnResult.reflectionReason && retries < config.maxRetries) {
                 retries++;
                 initialPrompt = generateReflectionPrompt(turnResult.reflectionReason);
                 isRetry = true;
                 continue;
             }
 
-            if (turnResult.reflectionReason && (retries >= config.maxRetries || isStream)) {
+            if (turnResult.reflectionReason && retries >= config.maxRetries) {
                  if (isStream) {
                      res.write(formatSSE(createContentChunk(chatId, model, `\n\nError: ${turnResult.reflectionReason}`)));
                  } else {

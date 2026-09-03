@@ -1,31 +1,25 @@
 import { CDPConnection } from './connection.js';
+import { getModel, resolveTargetModelId } from '../models/registry.js';
 
 export class ModeSwitcher {
   private cdp: CDPConnection;
-
-  private modeMapping: Record<string, string> = {
-    'gemini-3.7-flash': 'bard-mode-option-56fdd199312815e2',
-    'gemini-3.1-pro': 'bard-mode-option-e6fa609c3fa255c0',
-    'gemini-3.5-flash-lite': 'bard-mode-option-cf41b0e0dd7d53e5', // Updated from 8c46e95b1a07cecc (3.1 Flash-Lite)
-
-    // BACKWARDS COMPATIBILITY ALIASES:
-    // Clients using generic older names like 2.5-pro or 2.5-flash will be mapped to the UI components
-    // for 3.1-pro and 3.7-flash respectively, because Google Web UI no longer reliably serves "2.5" labelled options.
-    // This allows seamless backward compatibility for older agents, but note that the actual underlying model
-    // servicing the request will be the newer 3.x series model selected in the UI.
-    'gemini-2.5-pro': 'bard-mode-option-e6fa609c3fa255c0',
-    'gemini-2.5-flash': 'bard-mode-option-56fdd199312815e2'
-  };
 
   constructor(cdp: CDPConnection) {
     this.cdp = cdp;
   }
 
   async switchMode(modelName: string): Promise<void> {
-    const testId = this.modeMapping[modelName];
-    if (!testId) {
-      throw new Error(`Unknown model: ${modelName}. Supported models are 3.7-flash, 3.1-pro, 3.5-flash-lite.`);
+    const targetModelId = resolveTargetModelId(modelName);
+    if (!targetModelId) {
+      throw new Error(`Unknown model: ${modelName}. Supported models are 3.7-flash, 3.1-pro, 3.5-flash-lite, 2.5-pro, 2.5-flash.`);
     }
+
+    const targetModel = getModel(targetModelId);
+    if (!targetModel || !targetModel.webDomTestId) {
+         throw new Error(`Configuration error: resolved target model ${targetModelId} does not have a webDomTestId.`);
+    }
+
+    const testId = targetModel.webDomTestId;
 
     const script = `
       (async function() {

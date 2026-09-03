@@ -20,8 +20,10 @@ If you decide to invoke one or more tools, you MUST output the tool call strictl
 </tool_call>
 
 Rules:
-1. Do not wrap the <tool_call> tags inside markdown code blocks (e.g. do not use \`\`\`xml or \`\`\`json).
-2. Output plain text explanations before or after the tool call if needed.
-3. All arguments must strictly match the parameter JSON schema.
+1. Tool names must exactly match supplied tools.
+2. Arguments must be valid JSON and strictly conform to the supplied schema.
+3. Multiple tool calls are allowed where appropriate.
+4. Tool calls must not be wrapped in Markdown fences (e.g., no \`\`\`json or \`\`\`xml).
+5. Normal text may be emitted when no tool is required or as explanation before/after tool calls.
 `;
 }

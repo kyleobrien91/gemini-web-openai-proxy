@@ -1,78 +1,33 @@
 import { Router } from 'express';
+import { modelRegistry } from '../models/registry.js';
 
 const router = Router();
 
-// Ensure models listed here strictly match what ModeSwitcher can actually toggle
-const MODELS = [
-  {
-    id: "gemini-3.7-flash",
-    object: "model",
-    created: 1740000000,
-    owned_by: "google-web",
-    permission: [],
-    root: "gemini-3.7-flash",
-    parent: null,
-    metadata: {
-      web_label: "3.7 Flash (All-around help)",
-      web_dom_testid: "bard-mode-option-56fdd199312815e2"
-    }
-  },
-  {
-    id: "gemini-3.5-flash-lite",
-    object: "model",
-    created: 1740000000,
-    owned_by: "google-web",
-    permission: [],
-    root: "gemini-3.5-flash-lite",
-    parent: null,
-    metadata: {
-      web_label: "3.5 Flash-Lite (Fastest answers)",
-      web_dom_testid: "bard-mode-option-cf41b0e0dd7d53e5"
-    }
-  },
-  {
-    id: "gemini-3.1-pro",
-    object: "model",
-    created: 1740000000,
-    owned_by: "google-web",
-    permission: [],
-    root: "gemini-3.1-pro",
-    parent: null,
-    metadata: {
-      web_label: "3.1 Pro (Advanced reasoning)",
-      web_dom_testid: "bard-mode-option-e6fa609c3fa255c0"
-    }
-  },
-  {
-    id: "gemini-2.5-pro",
-    object: "model",
-    created: 1740000000,
-    owned_by: "google-web",
-    permission: [],
-    root: "gemini-2.5-pro",
-    parent: null,
-    metadata: {
-      alias_for: "gemini-3.1-pro"
-    }
-  },
-  {
-    id: "gemini-2.5-flash",
-    object: "model",
-    created: 1740000000,
-    owned_by: "google-web",
-    permission: [],
-    root: "gemini-2.5-flash",
-    parent: null,
-    metadata: {
-      alias_for: "gemini-3.7-flash"
-    }
-  }
-];
-
 router.get('/v1/models', (req, res) => {
+  const modelsList = Object.values(modelRegistry).map(model => {
+      const data: any = {
+        id: model.id,
+        object: "model",
+        created: 1740000000,
+        owned_by: "google-web",
+        permission: [],
+        root: model.id,
+        parent: null,
+        metadata: {}
+      };
+
+      if (model.aliasFor) {
+          data.metadata.alias_for = model.aliasFor;
+      } else {
+          data.metadata.web_label = model.name;
+          data.metadata.web_dom_testid = model.webDomTestId;
+      }
+      return data;
+  });
+
   res.json({
     object: 'list',
-    data: MODELS
+    data: modelsList
   });
 });
 
