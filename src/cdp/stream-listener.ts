@@ -156,8 +156,17 @@ export class StreamListener {
                 const extractDOMText = (root) => {
                     if (!root) return "";
                     let text = "";
+                    let openCodeBlock = false;
+
+                    const closeCodeBlockIfNeeded = () => {
+                        if (openCodeBlock) {
+                            if (text.length > 0 && !text.endsWith('\\n')) text += '\\n';
+                            text += '\`\`\`\\n';
+                            openCodeBlock = false;
+                        }
+                    };
                     
-                    const walk = (node, isLastChildOfParent) => {
+                    const walk = (node) => {
                         if (!node) return;
                         if (node.nodeType === Node.ELEMENT_NODE) {
                             const el = node;
@@ -169,19 +178,15 @@ export class StreamListener {
                             
                             // Handle code blocks explicitly to preserve language tag and clean indentation
                             if (el.tagName === 'CODE-BLOCK' || (el.classList && el.classList.contains('code-block'))) {
+                                closeCodeBlockIfNeeded();
                                 const langEl = el.querySelector('.code-block-decoration span, .code-block-decoration');
                                 const lang = (langEl ? langEl.textContent || '' : '').trim().toLowerCase();
-                                const codeEl = el.querySelector('code[data-test-id="code-content"], pre code, pre');
+                                const codeEl = el.querySelector('code[data-test-id="code-content"]') || el.querySelector('pre code') || el.querySelector('pre');
                                 const code = (codeEl ? codeEl.textContent || '' : '').replace(/\\r\\n|\\r/g, '\\n');
                                 
                                 if (text.length > 0 && !text.endsWith('\\n')) text += '\\n';
                                 text += '\`\`\`' + lang + '\\n' + code;
-                                
-                                // Only close the block fence if subsequent content exists
-                                if (!isLastChildOfParent) {
-                                    if (!text.endsWith('\\n')) text += '\\n';
-                                    text += '\`\`\`\\n';
-                                }
+                                openCodeBlock = true;
                                 return;
                             }
                             
@@ -192,8 +197,7 @@ export class StreamListener {
                             
                             const children = Array.from(el.childNodes);
                             for (let i = 0; i < children.length; i++) {
-                                const isLast = isLastChildOfParent && (i === children.length - 1);
-                                walk(children[i], isLast);
+                                walk(children[i]);
                             }
                             
                             if (isBlock && text.length > 0 && !text.endsWith('\\n')) {
@@ -203,11 +207,15 @@ export class StreamListener {
                         }
                         
                         if (node.nodeType === Node.TEXT_NODE) {
-                            text += (node.textContent || '').replace(/\\r\\n|\\r/g, '\\n');
+                            const content = (node.textContent || '').replace(/\\r\\n|\\r/g, '\\n');
+                            if (content.trim().length > 0) {
+                                closeCodeBlockIfNeeded();
+                            }
+                            text += content;
                         }
                     };
                     
-                    walk(root, true);
+                    walk(root);
                     return text.replace(/\\r\\n|\\r/g, '\\n');
                 };
 
@@ -225,8 +233,9 @@ export class StreamListener {
                     const maxAnchorLen = Math.min(50, last.length);
                     for (let anchorLen = maxAnchorLen; anchorLen >= 10; anchorLen -= 5) {
                         const anchor = last.slice(-anchorLen);
+                        if (anchor.trim().length < 3) continue;
                         const anchorPos = current.lastIndexOf(anchor);
-                        if (anchorPos !== -1 && (anchorPos + anchor.length) >= (last.length - 50)) {
+                        if (anchorPos !== -1 && (anchorPos + anchor.length) >= Math.max(0, last.length - 150)) {
                             const continuationIdx = anchorPos + anchor.length;
                             const diff = current.slice(continuationIdx);
                             return { diff: diff, newText: current };
@@ -256,16 +265,49 @@ export class StreamListener {
                     }
 
                     if (lIdx === lastNonWs.length) {
-                        // Skip over whitespace in current that was already emitted at the end of last
-                        let lastTrailingWsLen = 0;
-                        while (lastTrailingWsLen < last.length && /\\s/.test(last[last.length - 1 - lastTrailingWsLen])) {
-                            lastTrailingWsLen++;
+                        // Analyze trailing whitespace in last
+                        let lastTrailingWs = "";
+                        let p = last.length - 1;
+                        while (p >= 0 && /\\s/.test(last[p])) {
+                            lastTrailingWs = last[p] + lastTrailingWs;
+                            p--;
                         }
-                        let consumedWs = 0;
-                        while (consumedWs < lastTrailingWsLen && cIdx < current.length && /\\s/.test(current[cIdx])) {
-                            cIdx++;
-                            consumedWs++;
+
+                        let lastNlCount = (lastTrailingWs.match(/\\n/g) || []).length;
+                        let lastIndentLen = 0;
+                        if (lastNlCount > 0) {
+                            const lastNlIdx = lastTrailingWs.lastIndexOf('\\n');
+                            lastIndentLen = lastTrailingWs.length - 1 - lastNlIdx;
+                        } else {
+                            lastIndentLen = lastTrailingWs.length;
                         }
+
+                        // Consume matching whitespace in current without swallowing newlines
+                        let consumedNls = 0;
+                        if (lastNlCount > 0) {
+                            while (cIdx < current.length && consumedNls < lastNlCount) {
+                                if (current[cIdx] === '\\n') {
+                                    consumedNls++;
+                                    cIdx++;
+                                } else if (/\\s/.test(current[cIdx])) {
+                                    cIdx++;
+                                } else {
+                                    break;
+                                }
+                            }
+                            let consumedIndent = 0;
+                            while (cIdx < current.length && current[cIdx] !== '\\n' && /\\s/.test(current[cIdx]) && consumedIndent < lastIndentLen) {
+                                cIdx++;
+                                consumedIndent++;
+                            }
+                        } else {
+                            let consumedIndent = 0;
+                            while (cIdx < current.length && current[cIdx] !== '\\n' && /\\s/.test(current[cIdx]) && consumedIndent < lastIndentLen) {
+                                cIdx++;
+                                consumedIndent++;
+                            }
+                        }
+
                         const diff = current.slice(cIdx);
                         return { diff: diff, newText: current };
                     }
@@ -305,27 +347,32 @@ export class StreamListener {
                         if (state.settlingTimeout) {
                             clearTimeout(state.settlingTimeout);
                         }
-                        state.settlingTimeout = setTimeout(() => {
-                            state.settlingTimeout = null;
-                            if (state.aborted || !generatingElement) return;
+                        const scheduleSettling = () => {
+                            state.settlingTimeout = setTimeout(() => {
+                                state.settlingTimeout = null;
+                                if (state.aborted || !generatingElement) return;
 
-                            const settledText = extractDOMText(generatingElement);
-                            const settledRes = reconcileStream(lastText, settledText);
+                                const settledText = extractDOMText(generatingElement);
+                                const settledRes = reconcileStream(lastText, settledText);
 
-                            if (settledRes) {
-                                mismatchTicks = 0;
-                                lastText = settledRes.newText;
-                                if (settledRes.diff.length > 0) {
-                                    emitTurnPayload('proxyEmitToken', settledRes.diff);
+                                if (settledRes) {
+                                    mismatchTicks = 0;
+                                    lastText = settledRes.newText;
+                                    if (settledRes.diff.length > 0) {
+                                        emitTurnPayload('proxyEmitToken', settledRes.diff);
+                                    }
+                                } else if (settledText !== lastText) {
+                                    mismatchTicks++;
+                                    if (mismatchTicks >= 3) {
+                                        state.observer.disconnect();
+                                        emitTurnPayload('proxyEmitError', "DOM rewrite detected; stream discontinuity. The UI modified already-emitted text prefix.");
+                                    } else {
+                                        scheduleSettling();
+                                    }
                                 }
-                            } else if (settledText !== lastText) {
-                                mismatchTicks++;
-                                if (mismatchTicks >= 3) {
-                                    state.observer.disconnect();
-                                    emitTurnPayload('proxyEmitError', "DOM rewrite detected; stream discontinuity. The UI modified already-emitted text prefix.");
-                                }
-                            }
-                        }, 500);
+                            }, 500);
+                        };
+                        scheduleSettling();
                     }
                 };
 
@@ -350,9 +397,9 @@ export class StreamListener {
 
                     if (!generatingElement) return;
 
-                    const sendBtn = document.querySelector('button[aria-label="Send message"], button[aria-label="Send prompt"], button.send-button-container, .send-button button, [data-test-id="send-button"]');
-                    const stopBtn = document.querySelector('button[aria-label*="Stop"], button.stop-button, [data-mat-icon-name="stop"], mat-icon[fonticon="stop"]');
-                    const dictateBtn = document.querySelector('button[aria-label*="Dictate"], button[aria-label*="mic"]');
+                    const sendBtn = document.querySelector('button[aria-label="Send message" i], button[aria-label="Send prompt" i], button.send-button-container, .send-button button, [data-test-id="send-button"]');
+                    const stopBtn = document.querySelector('button[aria-label*="stop" i], button.stop-button, [data-mat-icon-name="stop"], mat-icon[fonticon="stop"]');
+                    const dictateBtn = document.querySelector('button[aria-label*="dictate" i], button[aria-label*="mic" i]');
 
                     const isSendReady = sendBtn && !sendBtn.disabled && sendBtn.getAttribute('aria-disabled') !== 'true' && !sendBtn.closest('[aria-disabled="true"]');
                     const isGenerating = !!stopBtn;

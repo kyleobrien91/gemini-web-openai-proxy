@@ -157,7 +157,7 @@ export class BrowserWorker {
                         }
 
                         attempts++;
-                        const submitBtn = document.querySelector('button[aria-label="Send message"], button[aria-label="Send prompt"], button.send-button-container, .send-button button, [data-test-id="send-button"]');
+                        const submitBtn = document.querySelector('button[aria-label="Send message" i], button[aria-label="Send prompt" i], button.send-button-container, .send-button button, [data-test-id="send-button"]');
 
                         // Strict usability check: exists, visible, not disabled, no aria-disabled
                         const isVisible = submitBtn && (submitBtn.offsetParent !== null || submitBtn.getBoundingClientRect().height > 0);
