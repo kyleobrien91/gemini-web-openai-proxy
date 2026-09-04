@@ -124,8 +124,9 @@ export class TabManager {
              returnByValue: true
          });
 
-         if (!resetRes || resetRes.value !== "SUCCESS") {
-             throw new Error(`Failed to initialize and verify a new conversation in Gemini UI: ${resetRes ? resetRes.value : 'unknown error'}`);
+         const resetVal = resetRes?.result?.value ?? resetRes?.value;
+         if (!resetRes || resetVal !== "SUCCESS") {
+             throw new Error(`Failed to initialize and verify a new conversation in Gemini UI: ${resetVal || 'unknown error'}`);
          }
      });
   }

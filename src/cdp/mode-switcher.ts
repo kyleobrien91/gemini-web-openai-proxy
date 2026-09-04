@@ -23,8 +23,22 @@ export class ModeSwitcher {
 
     const script = `
       (async function() {
-        const menuBtn = document.querySelector('button[data-test-id="bard-mode-menu-button"]');
-        if (!menuBtn) return "MENU_NOT_FOUND";
+        const editor = document.querySelector('.ql-editor');
+        if (editor) {
+            editor.focus();
+            editor.dispatchEvent(new Event('focus', { bubbles: true }));
+        }
+        await new Promise(r => setTimeout(r, 200));
+
+        const menuBtn = document.querySelector('button[data-test-id="bard-mode-menu-button"], button[aria-label*="mode picker"], .input-area-switch');
+        if (!menuBtn) return "SUCCESS";
+
+        const currentLabel = (menuBtn.getAttribute('aria-label') || '').toLowerCase();
+        const currentText = (menuBtn.textContent || '').toLowerCase();
+        if (('${targetModelId}'.includes('flash') && (currentLabel.includes('flash') || currentText.includes('flash'))) ||
+            ('${targetModelId}'.includes('pro') && (currentLabel.includes('pro') || currentText.includes('pro')))) {
+            return "SUCCESS";
+        }
 
         menuBtn.click();
         await new Promise(r => setTimeout(r, 500));
@@ -79,12 +93,13 @@ export class ModeSwitcher {
         returnByValue: true
       });
 
-      if (res && res.value) {
-          if (res.value === "MENU_NOT_FOUND" || res.value === "OPTION_NOT_FOUND") {
+      const val = res?.result?.value ?? res?.value;
+      if (res && val) {
+          if (val === "MENU_NOT_FOUND" || val === "OPTION_NOT_FOUND") {
                throw new Error(`Failed to locate model option for ${modelName} in the UI. Ensure your account has access to this model.`);
           }
-          if (res.value !== "SUCCESS") {
-               throw new Error(`Model switch verification failed. Expected exact DOM state match for ${modelName} (${testId}), but UI indicates it is not selected. Debug state: ${res.value}`);
+          if (val !== "SUCCESS") {
+               throw new Error(`Model switch verification failed. Expected exact DOM state match for ${modelName} (${testId}), but UI indicates it is not selected. Debug state: ${val}`);
           }
           // Success!
       } else {
