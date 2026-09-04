@@ -109,7 +109,7 @@ export class TabManager {
                   await new Promise(r => setTimeout(r, 1000));
 
                   // Verify that the chat is actually fresh
-                  const existingResponses = document.querySelectorAll('.model-response-text, model-response');
+                  const existingResponses = document.querySelectorAll('message-content, .model-response-text, model-response');
                   if (existingResponses.length === 0) {
                       return "SUCCESS";
                   }

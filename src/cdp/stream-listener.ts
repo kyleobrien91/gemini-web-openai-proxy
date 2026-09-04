@@ -261,6 +261,16 @@ export class StreamListener {
                     }
 
                     if (lIdx === lastNonWs.length) {
+                        // Skip over whitespace in current that was already emitted at the end of last
+                        let lastTrailingWsLen = 0;
+                        while (lastTrailingWsLen < last.length && /\s/.test(last[last.length - 1 - lastTrailingWsLen])) {
+                            lastTrailingWsLen++;
+                        }
+                        let consumedWs = 0;
+                        while (consumedWs < lastTrailingWsLen && cIdx < current.length && /\s/.test(current[cIdx])) {
+                            cIdx++;
+                            consumedWs++;
+                        }
                         const diff = current.slice(cIdx);
                         return { diff: diff, newText: current };
                     }
@@ -292,8 +302,8 @@ export class StreamListener {
                             clearTimeout(state.settlingTimeout);
                             state.settlingTimeout = null;
                         }
+                        lastText = reconciliation.newText;
                         if (reconciliation.diff.length > 0) {
-                            lastText = reconciliation.newText;
                             emitTurnPayload('proxyEmitToken', reconciliation.diff);
                         }
                     } else if (currentText.length > lastText.length) {
@@ -308,8 +318,8 @@ export class StreamListener {
 
                                 if (settledRes) {
                                     mismatchTicks = 0;
+                                    lastText = settledRes.newText;
                                     if (settledRes.diff.length > 0) {
-                                        lastText = settledRes.newText;
                                         emitTurnPayload('proxyEmitToken', settledRes.diff);
                                     }
                                 } else if (settledText.length > lastText.length && mismatchTicks >= 3) {
@@ -362,15 +372,17 @@ export class StreamListener {
                              // Final flush of any pending settled text
                              const finalText = extractDOMText(generatingElement);
                              const finalRes = reconcileStream(lastText, finalText);
-                             if (finalRes && finalRes.diff.length > 0) {
+                             if (finalRes) {
                                  lastText = finalRes.newText;
-                                 emitTurnPayload('proxyEmitToken', finalRes.diff);
+                                 if (finalRes.diff.length > 0) {
+                                     emitTurnPayload('proxyEmitToken', finalRes.diff);
+                                 }
                              }
 
                              // Ensure any opened code block fence is cleanly closed
                              const backtickCount = (lastText.match(/\\\`\\\`\\\`/g) || []).length;
                              if (backtickCount % 2 !== 0) {
-                                 const closeFence = '\\n\`\`\`\\n';
+                                 const closeFence = (lastText.endsWith('\\n') ? '' : '\\n') + '\`\`\`\\n';
                                  lastText += closeFence;
                                  emitTurnPayload('proxyEmitToken', closeFence);
                              }

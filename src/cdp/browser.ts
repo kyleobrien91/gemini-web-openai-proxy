@@ -76,6 +76,7 @@ export class BrowserWorker {
                 if (!inserted) {
                     try {
                         editor.focus();
+                        document.execCommand('selectAll', false, null);
                         const dt = new DataTransfer();
                         dt.setData('text/plain', inputPrompt);
                         const pasteEvt = new ClipboardEvent('paste', {
@@ -108,7 +109,7 @@ export class BrowserWorker {
                 if (!inserted || (editor.textContent?.trim().length === 0)) {
                     try {
                         editor.innerHTML = '';
-                        const lines = inputPrompt.split('\\n');
+                        const lines = inputPrompt.replace(/\\r\\n/g, '\\n').split('\\n');
                         for (const line of lines) {
                             const p = document.createElement('p');
                             if (line.length === 0) {
