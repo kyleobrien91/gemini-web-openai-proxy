@@ -31,12 +31,22 @@ export class ModeSwitcher {
         await new Promise(r => setTimeout(r, 200));
 
         const menuBtn = document.querySelector('button[data-test-id="bard-mode-menu-button"], button[aria-label*="mode picker"], .input-area-switch');
-        if (!menuBtn) return "SUCCESS";
+        if (!menuBtn) return "MENU_NOT_FOUND";
 
         const currentLabel = (menuBtn.getAttribute('aria-label') || '').toLowerCase();
         const currentText = (menuBtn.textContent || '').toLowerCase();
-        if (('${targetModelId}'.includes('flash') && (currentLabel.includes('flash') || currentText.includes('flash'))) ||
-            ('${targetModelId}'.includes('pro') && (currentLabel.includes('pro') || currentText.includes('pro')))) {
+        const combinedIndicator = currentLabel + ' ' + currentText;
+
+        let alreadySelected = false;
+        if ('${targetModelId}' === 'gemini-3.5-flash-lite') {
+            alreadySelected = combinedIndicator.includes('lite');
+        } else if ('${targetModelId}' === 'gemini-3.7-flash') {
+            alreadySelected = combinedIndicator.includes('flash') && !combinedIndicator.includes('lite');
+        } else if ('${targetModelId}' === 'gemini-3.1-pro') {
+            alreadySelected = combinedIndicator.includes('pro');
+        }
+
+        if (alreadySelected) {
             return "SUCCESS";
         }
 

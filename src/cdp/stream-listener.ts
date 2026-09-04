@@ -153,7 +153,7 @@ export class StreamListener {
                 let generatingElement = null;
 
                 // Extraction helper with CRLF normalization and structured code-block preservation
-                const extractDOMText = (root) => {
+                const extractDOMText = (root, isFinal = false) => {
                     if (!root) return "";
                     let text = "";
                     let openCodeBlock = false;
@@ -175,6 +175,13 @@ export class StreamListener {
                             if (el.tagName === 'BUTTON' || el.tagName === 'GEM-ICON-BUTTON' || (el.classList && el.classList.contains('buttons'))) {
                                 return;
                             }
+
+                            // Preserve hard line breaks inside paragraphs or text
+                            if (el.tagName === 'BR') {
+                                closeCodeBlockIfNeeded();
+                                text += '\\n';
+                                return;
+                            }
                             
                             // Handle code blocks explicitly to preserve language tag and clean indentation
                             if (el.tagName === 'CODE-BLOCK' || (el.classList && el.classList.contains('code-block'))) {
@@ -191,8 +198,11 @@ export class StreamListener {
                             }
                             
                             const isBlock = /^(P|DIV|H[1-6]|LI|PRE|TR|UL|OL|BLOCKQUOTE|TABLE)$/.test(el.tagName);
-                            if (isBlock && text.length > 0 && !text.endsWith('\\n')) {
-                                text += '\\n';
+                            if (isBlock) {
+                                closeCodeBlockIfNeeded();
+                                if (text.length > 0 && !text.endsWith('\\n')) {
+                                    text += '\\n';
+                                }
                             }
                             
                             const children = Array.from(el.childNodes);
@@ -216,6 +226,9 @@ export class StreamListener {
                     };
                     
                     walk(root);
+                    if (isFinal) {
+                        closeCodeBlockIfNeeded();
+                    }
                     return text.replace(/\\r\\n|\\r/g, '\\n');
                 };
 
@@ -414,22 +427,14 @@ export class StreamListener {
                              state.observer.disconnect();
                              if (state.settlingTimeout) clearTimeout(state.settlingTimeout);
 
-                             // Final flush of any pending settled text
-                             const finalText = extractDOMText(generatingElement);
+                             // Final flush of any pending settled text with structured code-block closure
+                             const finalText = extractDOMText(generatingElement, true);
                              const finalRes = reconcileStream(lastText, finalText);
                              if (finalRes) {
                                  lastText = finalRes.newText;
                                  if (finalRes.diff.length > 0) {
                                      emitTurnPayload('proxyEmitToken', finalRes.diff);
                                  }
-                             }
-
-                             // Ensure any opened code block fence is cleanly closed
-                             const backtickCount = (lastText.match(/\\\`\\\`\\\`/g) || []).length;
-                             if (backtickCount % 2 !== 0) {
-                                 const closeFence = (lastText.endsWith('\\n') ? '' : '\\n') + '\`\`\`\\n';
-                                 lastText += closeFence;
-                                 emitTurnPayload('proxyEmitToken', closeFence);
                              }
 
                              emitTurnPayload('proxyEmitComplete', "done");
