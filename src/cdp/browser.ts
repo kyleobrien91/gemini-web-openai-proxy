@@ -109,7 +109,7 @@ export class BrowserWorker {
                 if (!inserted || (editor.textContent?.trim().length === 0)) {
                     try {
                         editor.innerHTML = '';
-                        const lines = inputPrompt.replace(/\\r\\n/g, '\\n').split('\\n');
+                        const lines = inputPrompt.replace(/\\r\\n|\\r/g, '\\n').split('\\n');
                         for (const line of lines) {
                             const p = document.createElement('p');
                             if (line.length === 0) {
@@ -126,6 +126,11 @@ export class BrowserWorker {
                 }
 
                 // Actively trigger DOM input/change events to wake Angular change detection
+                try {
+                    editor.dispatchEvent(new InputEvent('beforeinput', { bubbles: true, composed: true, inputType: 'insertText', data: inputPrompt }));
+                } catch (e) {
+                    // Ignore if InputEvent not supported
+                }
                 editor.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
                 editor.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
 
@@ -156,7 +161,7 @@ export class BrowserWorker {
 
                         // Strict usability check: exists, visible, not disabled, no aria-disabled
                         const isVisible = submitBtn && (submitBtn.offsetParent !== null || submitBtn.getBoundingClientRect().height > 0);
-                        const isEnabled = submitBtn && !submitBtn.disabled && submitBtn.getAttribute('aria-disabled') !== 'true' && submitBtn.closest('gem-icon-button')?.getAttribute('aria-disabled') !== 'true';
+                        const isEnabled = submitBtn && !submitBtn.disabled && submitBtn.getAttribute('aria-disabled') !== 'true' && !submitBtn.closest('[aria-disabled="true"]');
 
                         if (isVisible && isEnabled) {
                             clearInterval(state.submitInterval);

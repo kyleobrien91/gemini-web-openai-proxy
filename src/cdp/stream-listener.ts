@@ -172,20 +172,20 @@ export class StreamListener {
                                 const langEl = el.querySelector('.code-block-decoration span, .code-block-decoration');
                                 const lang = (langEl ? langEl.textContent || '' : '').trim().toLowerCase();
                                 const codeEl = el.querySelector('code[data-test-id="code-content"], pre code, pre');
-                                const code = (codeEl ? codeEl.textContent || '' : '').replace(/\\r\\n/g, '\\n');
+                                const code = (codeEl ? codeEl.textContent || '' : '').replace(/\\r\\n|\\r/g, '\\n');
                                 
                                 if (text.length > 0 && !text.endsWith('\\n')) text += '\\n';
                                 text += '\`\`\`' + lang + '\\n' + code;
-                                if (!code.endsWith('\\n')) text += '\\n';
                                 
                                 // Only close the block fence if subsequent content exists
                                 if (!isLastChildOfParent) {
+                                    if (!text.endsWith('\\n')) text += '\\n';
                                     text += '\`\`\`\\n';
                                 }
                                 return;
                             }
                             
-                            const isBlock = /^(P|DIV|H[1-6]|LI|PRE|TR)$/.test(el.tagName);
+                            const isBlock = /^(P|DIV|H[1-6]|LI|PRE|TR|UL|OL|BLOCKQUOTE|TABLE)$/.test(el.tagName);
                             if (isBlock && text.length > 0 && !text.endsWith('\\n')) {
                                 text += '\\n';
                             }
@@ -203,12 +203,12 @@ export class StreamListener {
                         }
                         
                         if (node.nodeType === Node.TEXT_NODE) {
-                            text += (node.textContent || '').replace(/\\r\\n/g, '\\n');
+                            text += (node.textContent || '').replace(/\\r\\n|\\r/g, '\\n');
                         }
                     };
                     
                     walk(root, true);
-                    return text.replace(/\\r\\n/g, '\\n');
+                    return text.replace(/\\r\\n|\\r/g, '\\n');
                 };
 
                 // Resilient matching mechanism: fast path, lookback suffix anchor, non-whitespace alignment
@@ -219,11 +219,6 @@ export class StreamListener {
                     if (current.startsWith(last)) {
                         const diff = current.slice(last.length);
                         return { diff: diff, newText: current };
-                    }
-
-                    // Transient shrink/removal during layout reflow
-                    if (current.length < last.length) {
-                        return null;
                     }
 
                     // 2. Lookback Suffix Anchor
@@ -263,11 +258,11 @@ export class StreamListener {
                     if (lIdx === lastNonWs.length) {
                         // Skip over whitespace in current that was already emitted at the end of last
                         let lastTrailingWsLen = 0;
-                        while (lastTrailingWsLen < last.length && /\s/.test(last[last.length - 1 - lastTrailingWsLen])) {
+                        while (lastTrailingWsLen < last.length && /\\s/.test(last[last.length - 1 - lastTrailingWsLen])) {
                             lastTrailingWsLen++;
                         }
                         let consumedWs = 0;
-                        while (consumedWs < lastTrailingWsLen && cIdx < current.length && /\s/.test(current[cIdx])) {
+                        while (consumedWs < lastTrailingWsLen && cIdx < current.length && /\\s/.test(current[cIdx])) {
                             cIdx++;
                             consumedWs++;
                         }
@@ -306,28 +301,31 @@ export class StreamListener {
                         if (reconciliation.diff.length > 0) {
                             emitTurnPayload('proxyEmitToken', reconciliation.diff);
                         }
-                    } else if (currentText.length > lastText.length) {
-                        mismatchTicks++;
-                        if (!state.settlingTimeout) {
-                            state.settlingTimeout = setTimeout(() => {
-                                state.settlingTimeout = null;
-                                if (state.aborted || !generatingElement) return;
+                    } else if (currentText !== lastText) {
+                        if (state.settlingTimeout) {
+                            clearTimeout(state.settlingTimeout);
+                        }
+                        state.settlingTimeout = setTimeout(() => {
+                            state.settlingTimeout = null;
+                            if (state.aborted || !generatingElement) return;
 
-                                const settledText = extractDOMText(generatingElement);
-                                const settledRes = reconcileStream(lastText, settledText);
+                            const settledText = extractDOMText(generatingElement);
+                            const settledRes = reconcileStream(lastText, settledText);
 
-                                if (settledRes) {
-                                    mismatchTicks = 0;
-                                    lastText = settledRes.newText;
-                                    if (settledRes.diff.length > 0) {
-                                        emitTurnPayload('proxyEmitToken', settledRes.diff);
-                                    }
-                                } else if (settledText.length > lastText.length && mismatchTicks >= 3) {
+                            if (settledRes) {
+                                mismatchTicks = 0;
+                                lastText = settledRes.newText;
+                                if (settledRes.diff.length > 0) {
+                                    emitTurnPayload('proxyEmitToken', settledRes.diff);
+                                }
+                            } else if (settledText !== lastText) {
+                                mismatchTicks++;
+                                if (mismatchTicks >= 3) {
                                     state.observer.disconnect();
                                     emitTurnPayload('proxyEmitError', "DOM rewrite detected; stream discontinuity. The UI modified already-emitted text prefix.");
                                 }
-                            }, 800);
-                        }
+                            }
+                        }, 500);
                     }
                 };
 
@@ -356,7 +354,7 @@ export class StreamListener {
                     const stopBtn = document.querySelector('button[aria-label*="Stop"], button.stop-button, [data-mat-icon-name="stop"], mat-icon[fonticon="stop"]');
                     const dictateBtn = document.querySelector('button[aria-label*="Dictate"], button[aria-label*="mic"]');
 
-                    const isSendReady = sendBtn && !sendBtn.disabled && sendBtn.getAttribute('aria-disabled') !== 'true' && sendBtn.closest('gem-icon-button')?.getAttribute('aria-disabled') !== 'true';
+                    const isSendReady = sendBtn && !sendBtn.disabled && sendBtn.getAttribute('aria-disabled') !== 'true' && !sendBtn.closest('[aria-disabled="true"]');
                     const isGenerating = !!stopBtn;
                     const isInputReady = isSendReady || (Boolean(dictateBtn) && !isGenerating);
 
