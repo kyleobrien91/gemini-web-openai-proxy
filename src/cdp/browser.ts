@@ -2,6 +2,7 @@ import { CDPConnection } from './connection.js';
 import { TabManager } from './tab-manager.js';
 import { ModeSwitcher } from './mode-switcher.js';
 import { StreamListener, StreamListenerHandle } from './stream-listener.js';
+import { config } from '../config.js';
 
 export class BrowserWorker {
     public cdp: CDPConnection;
@@ -43,23 +44,110 @@ export class BrowserWorker {
             return null;
         }
 
-        // 3. Submit prompt via DOM automation
+        // 3. Submit prompt via hardened DOM automation supporting up to 30k tokens
+        const timeoutMs = config.submitTimeoutMs;
+        // Escape-safe serialization preserving quotes, backslashes, XML tags, and newlines byte-for-byte
+        const serializedPrompt = JSON.stringify(prompt)
+            .replace(/\u2028/g, '\\u2028')
+            .replace(/\u2029/g, '\\u2029');
+
         const script = `
-            (async function() {
+            (async function(inputPrompt, timeoutLimitMs) {
                 const state = window['__proxyTurn_${turnId}'];
                 if (!state || state.aborted) return "ABORTED";
 
-                const editor = document.querySelector('.ql-editor.textarea[contenteditable="true"]');
+                const editor = document.querySelector('.ql-editor.textarea[contenteditable="true"], .ql-editor[contenteditable="true"], .ql-editor');
                 if (!editor) return "EDITOR_NOT_FOUND";
 
-                editor.focus();
-                document.execCommand('selectAll', false, null);
-                document.execCommand('insertText', false, ${JSON.stringify(prompt)});
+                let inserted = false;
+
+                // Hierarchy Level 1: Model-aware bulk insertion via Quill API
+                const quill = editor.parentElement?.__quill || editor.__quill || (window.Quill && window.Quill.find ? window.Quill.find(editor) : null);
+                if (quill && typeof quill.setText === 'function') {
+                    try {
+                        quill.setText(inputPrompt, 'user');
+                        inserted = true;
+                    } catch (e) {
+                        console.warn('Quill bulk insertion failed, attempting fallback:', e);
+                    }
+                }
+
+                // Hierarchy Level 2: Synthetic clipboard paste
+                if (!inserted) {
+                    try {
+                        editor.focus();
+                        document.execCommand('selectAll', false, null);
+                        const dt = new DataTransfer();
+                        dt.setData('text/plain', inputPrompt);
+                        const pasteEvt = new ClipboardEvent('paste', {
+                            clipboardData: dt,
+                            bubbles: true,
+                            cancelable: true,
+                            composed: true
+                        });
+                        editor.dispatchEvent(pasteEvt);
+                        if (editor.textContent && editor.textContent.length > 0) {
+                            inserted = true;
+                        }
+                    } catch (e) {
+                        console.warn('Synthetic clipboard paste failed, attempting fallback:', e);
+                    }
+                }
+
+                // Hierarchy Level 3: execCommand('insertText')
+                if (!inserted) {
+                    try {
+                        editor.focus();
+                        document.execCommand('selectAll', false, null);
+                        inserted = document.execCommand('insertText', false, inputPrompt);
+                    } catch (e) {
+                        console.warn('execCommand insertText failed, attempting fallback:', e);
+                    }
+                }
+
+                // Hierarchy Level 4: Last-resort DOM mutation with editor state verification
+                if (!inserted || (editor.textContent?.trim().length === 0)) {
+                    try {
+                        editor.innerHTML = '';
+                        const lines = inputPrompt.replace(/\\r\\n|\\r/g, '\\n').split('\\n');
+                        for (const line of lines) {
+                            const p = document.createElement('p');
+                            if (line.length === 0) {
+                                p.appendChild(document.createElement('br'));
+                            } else {
+                                p.textContent = line;
+                            }
+                            editor.appendChild(p);
+                        }
+                        inserted = true;
+                    } catch (e) {
+                        console.warn('DOM mutation fallback failed:', e);
+                    }
+                }
+
+                // Actively trigger DOM input/change events to wake Angular change detection
+                try {
+                    editor.dispatchEvent(new InputEvent('beforeinput', { bubbles: true, composed: true, inputType: 'insertText', data: inputPrompt }));
+                } catch (e) {
+                    // Ignore if InputEvent not supported
+                }
+                editor.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+                editor.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
+
+                // Editor state verification: verify editor contains non-empty content
+                const currentContent = (quill && typeof quill.getText === 'function')
+                    ? quill.getText().replace(/\\n$/, '')
+                    : (editor.innerText || editor.textContent || '').trim();
+
+                if (!currentContent && inputPrompt.length > 0) {
+                    return "EDITOR_INSERTION_VERIFICATION_FAILED";
+                }
 
                 // Wait for the send button to become genuinely usable
                 return new Promise((resolve) => {
                     let attempts = 0;
-                    const maxAttempts = 50; // 50 * 100ms = 5 seconds max wait
+                    const intervalMs = 100;
+                    const maxAttempts = Math.ceil(timeoutLimitMs / intervalMs);
 
                     state.submitInterval = setInterval(() => {
                         if (state.aborted) {
@@ -69,11 +157,11 @@ export class BrowserWorker {
                         }
 
                         attempts++;
-                        const submitBtn = document.querySelector('button[aria-label="Send prompt"], button.send-button-container');
+                        const submitBtn = document.querySelector('button[aria-label="Send message" i], button[aria-label="Send prompt" i], button.send-button-container, .send-button button, [data-test-id="send-button"]');
 
                         // Strict usability check: exists, visible, not disabled, no aria-disabled
-                        const isVisible = submitBtn && submitBtn.offsetParent !== null && submitBtn.getBoundingClientRect().height > 0;
-                        const isEnabled = submitBtn && !submitBtn.disabled && submitBtn.getAttribute('aria-disabled') !== 'true';
+                        const isVisible = submitBtn && (submitBtn.offsetParent !== null || submitBtn.getBoundingClientRect().height > 0);
+                        const isEnabled = submitBtn && !submitBtn.disabled && submitBtn.getAttribute('aria-disabled') !== 'true' && !submitBtn.closest('[aria-disabled="true"]');
 
                         if (isVisible && isEnabled) {
                             clearInterval(state.submitInterval);
@@ -88,9 +176,9 @@ export class BrowserWorker {
                             clearInterval(state.submitInterval);
                             resolve("SUBMIT_BTN_NOT_USABLE_OR_TIMEOUT");
                         }
-                    }, 100);
+                    }, intervalMs);
                 });
-            })();
+            })(${serializedPrompt}, ${timeoutMs})
         `;
 
         let submitRes;
@@ -107,14 +195,16 @@ export class BrowserWorker {
             throw e;
         }
 
-        if (submitRes && submitRes.value === "ABORTED") {
+        const submitVal = submitRes?.result?.value ?? submitRes?.value;
+
+        if (submitVal === "ABORTED") {
             await streamHandle.cleanup();
             return null;
         }
 
-        if (submitRes && submitRes.value !== "SUCCESS") {
+        if (submitVal !== "SUCCESS") {
             await streamHandle.cleanup();
-            throw new Error(`Failed to submit prompt: ${submitRes.value}`);
+            throw new Error(`Failed to submit prompt: ${submitVal}`);
         }
 
         // 4. Return handle so caller can await completion

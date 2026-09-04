@@ -27,7 +27,8 @@ export class CDPConnection {
     }
 
     if (!target) {
-        target = targets.find(t => t.url.includes('gemini.google.com/app'));
+        target = targets.find(t => t.type === 'page' && t.url.includes('gemini.google.com/app'))
+              || targets.find(t => t.type === 'page' && t.url.includes('gemini.google.com'));
 
         if (!target) {
             const newTabRes = await fetch(`http://${config.cdpHost}:${config.cdpPort}/json/new?https://gemini.google.com/app`, { method: 'PUT' });

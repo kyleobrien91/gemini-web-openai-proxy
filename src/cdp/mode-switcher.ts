@@ -23,8 +23,32 @@ export class ModeSwitcher {
 
     const script = `
       (async function() {
-        const menuBtn = document.querySelector('button[data-test-id="bard-mode-menu-button"]');
+        const editor = document.querySelector('.ql-editor');
+        if (editor) {
+            editor.focus();
+            editor.dispatchEvent(new Event('focus', { bubbles: true }));
+        }
+        await new Promise(r => setTimeout(r, 200));
+
+        const menuBtn = document.querySelector('button[data-test-id="bard-mode-menu-button"], button[aria-label*="mode picker"], .input-area-switch');
         if (!menuBtn) return "MENU_NOT_FOUND";
+
+        const currentLabel = (menuBtn.getAttribute('aria-label') || '').toLowerCase();
+        const currentText = (menuBtn.textContent || '').toLowerCase();
+        const combinedIndicator = currentLabel + ' ' + currentText;
+
+        let alreadySelected = false;
+        if ('${targetModelId}' === 'gemini-3.5-flash-lite') {
+            alreadySelected = combinedIndicator.includes('lite');
+        } else if ('${targetModelId}' === 'gemini-3.7-flash') {
+            alreadySelected = combinedIndicator.includes('flash') && !combinedIndicator.includes('lite');
+        } else if ('${targetModelId}' === 'gemini-3.1-pro') {
+            alreadySelected = combinedIndicator.includes('pro');
+        }
+
+        if (alreadySelected) {
+            return "SUCCESS";
+        }
 
         menuBtn.click();
         await new Promise(r => setTimeout(r, 500));
@@ -79,12 +103,13 @@ export class ModeSwitcher {
         returnByValue: true
       });
 
-      if (res && res.value) {
-          if (res.value === "MENU_NOT_FOUND" || res.value === "OPTION_NOT_FOUND") {
+      const val = res?.result?.value ?? res?.value;
+      if (res && val) {
+          if (val === "MENU_NOT_FOUND" || val === "OPTION_NOT_FOUND") {
                throw new Error(`Failed to locate model option for ${modelName} in the UI. Ensure your account has access to this model.`);
           }
-          if (res.value !== "SUCCESS") {
-               throw new Error(`Model switch verification failed. Expected exact DOM state match for ${modelName} (${testId}), but UI indicates it is not selected. Debug state: ${res.value}`);
+          if (val !== "SUCCESS") {
+               throw new Error(`Model switch verification failed. Expected exact DOM state match for ${modelName} (${testId}), but UI indicates it is not selected. Debug state: ${val}`);
           }
           // Success!
       } else {

@@ -239,6 +239,7 @@ router.post('/v1/chat/completions', async (req, res) => {
            });
         }
     } catch (e: any) {
+        console.error('[COMPLETION_ERROR]', e);
         if (!res.headersSent) {
            let status = 502; // Default to Bad Gateway for generic upstream failures
            if (e.message.includes("Unknown model") || e.message.includes("Model switch failed")) status = 400;
