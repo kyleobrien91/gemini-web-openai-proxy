@@ -157,7 +157,7 @@ router.post('/v1/chat/completions', async (req, res) => {
             },
             signal,
             isRetry,
-            isRetry ? undefined : extraction.files
+            extraction.files
           );
 
           if (signal.aborted && process.env.NODE_ENV !== 'test') {
@@ -211,7 +211,12 @@ router.post('/v1/chat/completions', async (req, res) => {
             // Only retry in non-streaming mode to prevent SSE chunk corruption.
             if (turnResult.reflectionReason && retries < config.maxRetries && !isStream) {
                 retries++;
-                initialPrompt = generateReflectionPrompt(turnResult.reflectionReason);
+                const reflectionPrompt = generateReflectionPrompt(turnResult.reflectionReason);
+                if (extraction.files && extraction.files.length > 0) {
+                    initialPrompt = `${normalizeMessages(request)}\n\nAssistant: ${turnResult.content || ''}\n\n${reflectionPrompt}`;
+                } else {
+                    initialPrompt = reflectionPrompt;
+                }
                 isRetry = true;
                 continue;
             }

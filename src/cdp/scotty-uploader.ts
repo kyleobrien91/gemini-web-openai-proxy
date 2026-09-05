@@ -33,11 +33,15 @@ export class ScottyUploader {
   }
 
   async upload(file: UploadableFile, signal?: AbortSignal): Promise<UploadedBlob> {
+    const typeCode = file.mimeType.startsWith('image/') ? 1 : 16;
     const cached = this.cache.get(file.sha256);
     if (cached) {
       return {
         ...cached,
         sha256: file.sha256,
+        filename: file.filename,
+        mimeType: file.mimeType,
+        typeCode,
       };
     }
 
@@ -45,7 +49,6 @@ export class ScottyUploader {
       throw new Error('Upload cancelled');
     }
 
-    const typeCode = file.mimeType.startsWith('image/') ? 1 : 16;
     const base64Data = file.bytes.toString('base64');
     const input = {
       filename: file.filename,
@@ -162,6 +165,9 @@ export class ScottyUploader {
     return {
       ...entry,
       sha256: file.sha256,
+      filename: file.filename,
+      mimeType: file.mimeType,
+      typeCode,
     };
   }
 
