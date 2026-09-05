@@ -24,7 +24,7 @@ export class ModeSwitcher {
     const script = `
       (async function() {
         let menuBtn = null;
-        for (let i = 0; i < 50; i++) {
+        for (let i = 0; i < 150; i++) {
             const editor = document.querySelector('.ql-editor');
             if (editor && i % 5 === 0) {
                 editor.focus();

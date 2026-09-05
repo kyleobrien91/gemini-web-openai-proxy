@@ -2,19 +2,28 @@ import { CDPConnection } from './connection.js';
 import { TabManager } from './tab-manager.js';
 import { ModeSwitcher } from './mode-switcher.js';
 import { StreamListener, StreamListenerHandle } from './stream-listener.js';
+import { ScottyUploader } from './scotty-uploader.js';
+import { StreamService, StreamGenerateHandle } from './stream-service.js';
+import { UploadableFile } from '../prompt/file-extractor.js';
 import { config } from '../config.js';
+
+export type TurnStreamHandle = StreamListenerHandle | StreamGenerateHandle;
 
 export class BrowserWorker {
     public cdp: CDPConnection;
     public tabManager: TabManager;
     public modeSwitcher: ModeSwitcher;
     public streamListener: StreamListener;
+    public scottyUploader: ScottyUploader;
+    public streamService: StreamService;
 
     constructor() {
         this.cdp = new CDPConnection();
         this.tabManager = new TabManager(this.cdp);
         this.modeSwitcher = new ModeSwitcher(this.cdp);
         this.streamListener = new StreamListener(this.cdp);
+        this.scottyUploader = new ScottyUploader(this.cdp);
+        this.streamService = new StreamService(this.cdp);
     }
 
     private async initialize(isRetry: boolean = false) {
@@ -26,7 +35,15 @@ export class BrowserWorker {
         }
     }
 
-    async submitPrompt(turnId: string, prompt: string, model: string, onToken: (token: string) => void, signal?: AbortSignal, isRetry: boolean = false): Promise<StreamListenerHandle | null> {
+    async submitPrompt(
+        turnId: string,
+        prompt: string,
+        model: string,
+        onToken: (token: string) => void,
+        signal?: AbortSignal,
+        isRetry: boolean = false,
+        attachments?: UploadableFile[]
+    ): Promise<TurnStreamHandle | null> {
         if (signal?.aborted) return null;
 
         // Initialization happens inside the route lock. We pass isRetry to prevent chat reset.
@@ -36,6 +53,20 @@ export class BrowserWorker {
         // 1. Switch mode
         await this.modeSwitcher.switchMode(model);
         if (signal?.aborted) return null;
+
+        // If multimodal attachments are provided, use direct Scotty upload + StreamGenerate transport
+        if (attachments && attachments.length > 0) {
+            const uploadedBlobs = await this.scottyUploader.uploadAll(attachments, signal);
+            if (signal?.aborted) return null;
+
+            const streamHandle = await this.streamService.streamGenerate(
+                turnId,
+                { model, prompt, blobs: uploadedBlobs },
+                onToken,
+                signal
+            );
+            return streamHandle;
+        }
 
         // 2. Setup listener BEFORE submitting, guaranteeing completion of setup
         const streamHandle = await this.streamListener.setup(turnId, onToken, signal);
