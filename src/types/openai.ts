@@ -9,9 +9,51 @@ export const ToolCallSchema = z.object({
   }),
 });
 
+export const TextPartSchema = z.object({
+  type: z.literal('text'),
+  text: z.string(),
+});
+
+export const ImageUrlPartSchema = z.object({
+  type: z.literal('image_url'),
+  image_url: z.object({
+    url: z.string().min(1),
+    detail: z.enum(['auto', 'low', 'high']).optional(),
+  }),
+});
+
+export const FilePartSchema = z.object({
+  type: z.literal('file'),
+  file: z.object({
+    url: z.string().optional(),
+    data: z.string().optional(),
+    name: z.string().optional(),
+    mime_type: z.string().optional(),
+  }).refine(
+    (file) => Boolean(file.url || file.data),
+    {
+      message: 'file.url or file.data is required',
+      path: ['file'],
+    },
+  ),
+});
+
+export const MessageContentPartSchema = z.discriminatedUnion('type', [
+  TextPartSchema,
+  ImageUrlPartSchema,
+  FilePartSchema,
+]);
+
+export type MessageContentPart = z.infer<typeof MessageContentPartSchema>;
+
+export const MessageContentSchema = z.union([
+  z.string(),
+  z.array(MessageContentPartSchema),
+]);
+
 export const MessageSchema = z.object({
   role: z.enum(['system', 'user', 'assistant', 'tool']),
-  content: z.string().nullable().optional(),
+  content: MessageContentSchema.nullable().optional(),
   name: z.string().optional(),
   tool_calls: z.array(ToolCallSchema).optional(),
   tool_call_id: z.string().optional(),

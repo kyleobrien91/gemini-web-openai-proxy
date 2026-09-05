@@ -1,6 +1,25 @@
-import { ChatCompletionRequest } from '../types/openai.js';
+import { ChatCompletionRequest, Message } from '../types/openai.js';
 import { injectToolSchemas } from './tool-injector.js';
 import { tryParseJSON } from '../lexer/auto-repair.js';
+
+export function formatContent(content: Message['content']): string {
+  if (!content) return '';
+  if (typeof content === 'string') return content;
+  if (Array.isArray(content)) {
+    const pieces: string[] = [];
+    for (const part of content) {
+      if (part.type === 'text') {
+        pieces.push(part.text);
+      } else if (part.type === 'image_url') {
+        pieces.push('[Attached Image]');
+      } else if (part.type === 'file') {
+        pieces.push(`[Attached File: ${part.file.name || 'attachment'}]`);
+      }
+    }
+    return pieces.join('\n');
+  }
+  return '';
+}
 
 export function normalizeMessages(request: ChatCompletionRequest): string {
   const { messages, tools } = request;
@@ -11,8 +30,9 @@ export function normalizeMessages(request: ChatCompletionRequest): string {
   if (systemMessages.length > 0) {
     flattenedPrompt += `### System Instructions:\n`;
     for (const msg of systemMessages) {
-      if (msg.content) {
-        flattenedPrompt += `${msg.content}\n\n`;
+      const formatted = formatContent(msg.content);
+      if (formatted) {
+        flattenedPrompt += `${formatted}\n\n`;
       }
     }
   }
@@ -28,12 +48,13 @@ export function normalizeMessages(request: ChatCompletionRequest): string {
     flattenedPrompt += `### Conversation History:\n`;
     for (let i = 0; i < historyMessages.length - 1; i++) {
         const msg = historyMessages[i];
+        const formatted = formatContent(msg.content);
         if (msg.role === 'user') {
-            flattenedPrompt += `[User]:\n${msg.content}\n\n`;
+            flattenedPrompt += `[User]:\n${formatted}\n\n`;
         } else if (msg.role === 'assistant') {
             flattenedPrompt += `[Assistant]:\n`;
-            if (msg.content) {
-                flattenedPrompt += `${msg.content}\n`;
+            if (formatted) {
+                flattenedPrompt += `${formatted}\n`;
             }
             if (msg.tool_calls && msg.tool_calls.length > 0) {
                 flattenedPrompt += `[Assistant Tool Calls]:\n`;
@@ -54,7 +75,7 @@ export function normalizeMessages(request: ChatCompletionRequest): string {
             }
             flattenedPrompt += `\n`;
         } else if (msg.role === 'tool') {
-             flattenedPrompt += `[Tool Result]:\ntool_call_id: ${msg.tool_call_id || 'unknown'}\n${msg.content}\n\n`;
+             flattenedPrompt += `[Tool Result]:\ntool_call_id: ${msg.tool_call_id || 'unknown'}\n${formatted}\n\n`;
         }
     }
 
@@ -62,11 +83,12 @@ export function normalizeMessages(request: ChatCompletionRequest): string {
     const lastMsg = historyMessages[historyMessages.length - 1];
     if (lastMsg) {
          flattenedPrompt += `### Current Instruction:\n`;
+         const formatted = formatContent(lastMsg.content);
          if (lastMsg.role === 'user') {
-             flattenedPrompt += `[User]:\n${lastMsg.content}\n\n`;
+             flattenedPrompt += `[User]:\n${formatted}\n\n`;
          } else if (lastMsg.role === 'tool') {
              // Edge case where a tool result is the last message
-             flattenedPrompt += `[Tool Result]:\ntool_call_id: ${lastMsg.tool_call_id || 'unknown'}\n${lastMsg.content}\n\nPlease proceed based on the tool result above.\n\n`;
+             flattenedPrompt += `[Tool Result]:\ntool_call_id: ${lastMsg.tool_call_id || 'unknown'}\n${formatted}\n\nPlease proceed based on the tool result above.\n\n`;
          }
     }
   }

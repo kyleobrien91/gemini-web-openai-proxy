@@ -23,14 +23,18 @@ export class ModeSwitcher {
 
     const script = `
       (async function() {
-        const editor = document.querySelector('.ql-editor');
-        if (editor) {
-            editor.focus();
-            editor.dispatchEvent(new Event('focus', { bubbles: true }));
+        let menuBtn = null;
+        for (let i = 0; i < 150; i++) {
+            const editor = document.querySelector('.ql-editor');
+            if (editor && i % 5 === 0) {
+                editor.focus();
+                editor.dispatchEvent(new Event('focus', { bubbles: true }));
+            }
+            menuBtn = document.querySelector('button[data-test-id="bard-mode-menu-button"], button[aria-label*="mode picker"], .input-area-switch');
+            if (menuBtn) break;
+            await new Promise(r => setTimeout(r, 100));
         }
-        await new Promise(r => setTimeout(r, 200));
 
-        const menuBtn = document.querySelector('button[data-test-id="bard-mode-menu-button"], button[aria-label*="mode picker"], .input-area-switch');
         if (!menuBtn) return "MENU_NOT_FOUND";
 
         const currentLabel = (menuBtn.getAttribute('aria-label') || '').toLowerCase();
@@ -50,49 +54,55 @@ export class ModeSwitcher {
             return "SUCCESS";
         }
 
-        menuBtn.click();
-        await new Promise(r => setTimeout(r, 500));
+        const triggerPointerClick = (el) => {
+            el.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true, composed: true }));
+            el.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, composed: true }));
+            el.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, cancelable: true, composed: true }));
+            el.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true, composed: true }));
+            el.click();
+        };
 
-        const optionBtn = document.querySelector('[data-test-id="${testId}"]');
+        triggerPointerClick(menuBtn);
+
+        let optionBtn = null;
+        for (let i = 0; i < 20; i++) {
+            optionBtn = document.querySelector('[data-test-id="${testId}"]');
+            if (!optionBtn && '${targetModelId}' === 'gemini-3.5-flash-lite') {
+                optionBtn = document.querySelector('[data-test-id="bard-mode-option-8c46e95b1a07cecc"], [data-test-id="bard-mode-option-cf41b0e0dd7d53e5"]');
+            }
+            if (optionBtn) break;
+            await new Promise(r => setTimeout(r, 100));
+        }
+
         if (!optionBtn) {
-            menuBtn.click(); // cleanup
+            triggerPointerClick(menuBtn); // cleanup
             return "OPTION_NOT_FOUND";
         }
 
-        optionBtn.click();
+        triggerPointerClick(optionBtn);
 
-        // Wait for the UI state to settle
-        await new Promise(r => setTimeout(r, 500));
+        // Verify button indicator reflects the target model
+        for (let i = 0; i < 25; i++) {
+            const updatedLabel = (menuBtn.getAttribute('aria-label') || '').toLowerCase();
+            const updatedText = (menuBtn.textContent || '').toLowerCase();
+            const updatedCombined = updatedLabel + ' ' + updatedText;
 
-        // Re-open menu to inspect the selected state directly on the exact option element
-        menuBtn.click();
-        await new Promise(r => setTimeout(r, 500));
-
-        let result = "VERIFICATION_FAILED_NOT_SELECTED";
-        try {
-            const verifyBtn = document.querySelector('[data-test-id="${testId}"]');
-            if (!verifyBtn) {
-                result = "VERIFICATION_OPTION_VANISHED";
-            } else {
-                // Strictly evaluate accessibility and active state classes.
-                // We do NOT use broad child queries like 'svg' or 'mat-icon' which can cause false positives.
-                const isSelected =
-                    verifyBtn.getAttribute('aria-selected') === 'true' ||
-                    verifyBtn.getAttribute('aria-checked') === 'true' ||
-                    verifyBtn.getAttribute('aria-current') === 'true' ||
-                    verifyBtn.classList.contains('selected') ||
-                    verifyBtn.classList.contains('is-selected');
-
-                if (isSelected) {
-                    result = "SUCCESS";
-                }
+            let verified = false;
+            if ('${targetModelId}' === 'gemini-3.5-flash-lite') {
+                verified = updatedCombined.includes('lite');
+            } else if ('${targetModelId}' === 'gemini-3.7-flash') {
+                verified = updatedCombined.includes('flash') && !updatedCombined.includes('lite');
+            } else if ('${targetModelId}' === 'gemini-3.1-pro') {
+                verified = updatedCombined.includes('pro');
             }
-        } finally {
-            // Guarantee menu cleanup on every path
-            menuBtn.click();
+
+            if (verified) {
+                return "SUCCESS";
+            }
+            await new Promise(r => setTimeout(r, 100));
         }
 
-        return result;
+        return "VERIFICATION_FAILED_NOT_SELECTED";
       })();
     `;
 
@@ -105,7 +115,10 @@ export class ModeSwitcher {
 
       const val = res?.result?.value ?? res?.value;
       if (res && val) {
-          if (val === "MENU_NOT_FOUND" || val === "OPTION_NOT_FOUND") {
+          if (val === "MENU_NOT_FOUND") {
+               throw new Error(`Model mode picker menu button not found in the Gemini UI.`);
+          }
+          if (val === "OPTION_NOT_FOUND") {
                throw new Error(`Failed to locate model option for ${modelName} in the UI. Ensure your account has access to this model.`);
           }
           if (val !== "SUCCESS") {

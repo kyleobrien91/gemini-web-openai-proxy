@@ -19,7 +19,7 @@ export const modelRegistry: Record<string, ModelDefinition> = {
   'gemini-3.5-flash-lite': {
     id: 'gemini-3.5-flash-lite',
     name: 'Gemini 3.5 Flash Lite',
-    webDomTestId: 'bard-mode-option-cf41b0e0dd7d53e5'
+    webDomTestId: 'bard-mode-option-8c46e95b1a07cecc'
   },
   'gemini-2.5-pro': {
     id: 'gemini-2.5-pro',

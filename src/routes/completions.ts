@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { v4 as uuidv4 } from 'uuid';
 import { ChatCompletionRequestSchema, Tool } from '../types/openai.js';
 import { normalizeMessages } from '../prompt/normalizer.js';
+import { extractMultimodalMessages, RequestExtractionError } from '../prompt/file-extractor.js';
 import { StreamLexer } from '../lexer/stream-lexer.js';
 import { generateReflectionPrompt } from '../lexer/reflection.js';
 import { createContentChunk, createToolHeaderChunk, createToolArgChunk, createDoneChunk, formatSSE } from '../utils/sse.js';
@@ -12,8 +13,6 @@ import { getModel } from '../models/registry.js';
 
 const router = Router();
 const routeMutex = new Mutex(); // Global mutex for the route
-
-
 
 router.post('/v1/chat/completions', async (req, res) => {
   let timeoutId: NodeJS.Timeout | undefined;
@@ -44,6 +43,17 @@ router.post('/v1/chat/completions', async (req, res) => {
     // Warn/log if they try to pass these since we can't control them via Web UI
     if (request.temperature !== undefined || request.top_p !== undefined) {
        console.warn("Client requested temperature or top_p, which are unsupported and ignored via Gemini Web UI proxy.");
+    }
+
+    // Extract multimodal parts BEFORE locking routeMutex (SSRF, remote downloads, decoding)
+    let extraction;
+    try {
+      extraction = await extractMultimodalMessages(request.messages);
+    } catch (err: any) {
+      if (err instanceof RequestExtractionError) {
+        return res.status(err.statusCode).json({ error: { message: err.message } });
+      }
+      return res.status(400).json({ error: { message: err.message || 'File extraction failed' } });
     }
 
     const isStream = request.stream === true;
@@ -137,17 +147,25 @@ router.post('/v1/chat/completions', async (req, res) => {
           // Submit prompt to live browser
           if (signal.aborted) throw new Error("Request cancelled or timed out");
 
-          // Submit ensures stream listener is correctly started and awaited
-          const handle = await browserWorker.submitPrompt(turnId, currentPrompt, model, (token) => {
+          // Submit ensures stream listener or stream service is correctly started and awaited
+          const handle = await browserWorker.submitPrompt(
+            turnId,
+            currentPrompt,
+            model,
+            (token) => {
               lexer.processChunk(token);
-          }, signal, isRetry);
+            },
+            signal,
+            isRetry,
+            extraction.files
+          );
 
           if (signal.aborted && process.env.NODE_ENV !== 'test') {
               if (handle?.cleanup) await handle.cleanup();
               throw new Error("Request cancelled or timed out");
           }
 
-          // Await stream listener completion safely
+          // Await stream completion safely
           try {
               if (handle?.waitForCompletion) {
                   await handle.waitForCompletion();
@@ -191,23 +209,23 @@ router.post('/v1/chat/completions', async (req, res) => {
             if (signal.aborted && process.env.NODE_ENV !== 'test') throw new Error("Request cancelled or timed out");
 
             // Only retry in non-streaming mode to prevent SSE chunk corruption.
-            // Even though StreamLexer buffers invalid tool calls, a partial response might have
-            // already emitted text, so retrying would cause duplicated text or role deltas.
             if (turnResult.reflectionReason && retries < config.maxRetries && !isStream) {
                 retries++;
-                initialPrompt = generateReflectionPrompt(turnResult.reflectionReason);
+                const reflectionPrompt = generateReflectionPrompt(turnResult.reflectionReason);
+                if (extraction.files && extraction.files.length > 0) {
+                    initialPrompt = `${normalizeMessages(request)}\n\nAssistant: ${turnResult.content || ''}\n\n${reflectionPrompt}`;
+                } else {
+                    initialPrompt = reflectionPrompt;
+                }
                 isRetry = true;
                 continue;
             }
 
             if (turnResult.reflectionReason && retries >= config.maxRetries) {
-                 // Non-streaming invalid generation -> 5xx error
                  throw new Error(`Failed to generate valid output after ${config.maxRetries} reflection attempts. Last error: ${turnResult.reflectionReason}`);
             }
 
             if (turnResult.reflectionReason && isStream) {
-                 // Streaming invalid generation -> terminate SSE immediately without [DONE]
-                 // This instructs the client that the stream failed, rather than claiming successful completion.
                  res.end();
                  return;
             }
@@ -241,17 +259,11 @@ router.post('/v1/chat/completions', async (req, res) => {
     } catch (e: any) {
         console.error('[COMPLETION_ERROR]', e);
         if (!res.headersSent) {
-           let status = 502; // Default to Bad Gateway for generic upstream failures
+           let status = 502;
            if (e.message.includes("Unknown model") || e.message.includes("Model switch failed")) status = 400;
            res.status(status).json({ error: { message: e.message } });
         } else {
-           if (isStream) {
-               // Do not emit success markers on failure in stream mode.
-               // Simply close the stream to signal an incomplete/failed response.
-               res.end();
-           } else {
-               res.end();
-           }
+           res.end();
         }
     } finally {
         routeMutex.unlock();

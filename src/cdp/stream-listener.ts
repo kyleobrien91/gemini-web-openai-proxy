@@ -338,6 +338,8 @@ export class StreamListener {
                         const elements = document.querySelectorAll(activeSelector);
                         if (elements.length > initialCount) {
                              generatingElement = elements[elements.length - 1];
+                        } else if (elements.length > 0 && elements[elements.length - 1].textContent?.trim()) {
+                             generatingElement = elements[elements.length - 1];
                         }
                     }
 
@@ -404,6 +406,8 @@ export class StreamListener {
                         const activeSelector = document.querySelector('message-content') ? 'message-content' : SELECTOR;
                         const elements = document.querySelectorAll(activeSelector);
                         if (elements.length > initialCount) {
+                             generatingElement = elements[elements.length - 1];
+                        } else if (elements.length > 0 && elements[elements.length - 1].textContent?.trim()) {
                              generatingElement = elements[elements.length - 1];
                         }
                     }
