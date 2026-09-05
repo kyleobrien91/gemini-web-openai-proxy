@@ -99,27 +99,60 @@ export class TabManager {
        await new Promise(r => setTimeout(r, 1000));
      }
 
-     // Trigger "New chat" to clear previous history and establish a clean session
-     const script = `
-       (async function() {
-          const newChatBtn = document.querySelector('button[aria-label="New chat"], a[href="/app"], a[aria-label="New chat"]');
-          if (newChatBtn) {
-              newChatBtn.click();
-              await new Promise(r => setTimeout(r, 500));
-          }
-          return "SUCCESS";
-       })();
-     `;
+      // Trigger "New chat" to clear previous history and establish a clean session
+      const script = `
+        (async function() {
+           const findNewChatBtn = () => {
+             return document.querySelector(
+               'button[aria-label="New chat"], a[href="/app"], a[aria-label="New chat"], [data-test-id="side-nav-sparkle-button"], [data-test-id="new-chat-button"]'
+             );
+           };
 
-     const resetRes = await this.cdp.send('Runtime.evaluate', {
-         expression: script,
-         awaitPromise: true,
-         returnByValue: true
-     });
+           const getResponseCount = () => {
+             return document.querySelectorAll('.model-response-text, [data-test-id="model-response-text"], message-content').length;
+           };
 
-     const resetVal = resetRes?.result?.value ?? resetRes?.value;
-     if (!resetRes || resetVal !== "SUCCESS") {
-         throw new Error(`Failed to initialize and verify a new conversation in Gemini UI: ${resetVal || 'unknown error'}`);
-     }
+           if (getResponseCount() === 0 && (window.location.pathname === '/app' || window.location.pathname === '/')) {
+             return "SUCCESS";
+           }
+
+           let btn = findNewChatBtn();
+           if (!btn) {
+             const start = Date.now();
+             while (Date.now() - start < 3000) {
+               await new Promise(r => setTimeout(r, 200));
+               btn = findNewChatBtn();
+               if (btn) break;
+             }
+           }
+
+           if (!btn) {
+             return "NEW_CHAT_BUTTON_NOT_FOUND";
+           }
+
+           btn.click();
+
+           const clearStart = Date.now();
+           while (Date.now() - clearStart < 5000) {
+             await new Promise(r => setTimeout(r, 250));
+             if (getResponseCount() === 0) {
+               return "SUCCESS";
+             }
+           }
+
+           return "CHAT_RESET_VERIFICATION_FAILED";
+        })();
+      `;
+
+      const resetRes = await this.cdp.send('Runtime.evaluate', {
+          expression: script,
+          awaitPromise: true,
+          returnByValue: true
+      });
+
+      const resetVal = resetRes?.result?.value ?? resetRes?.value;
+      if (!resetRes || resetVal !== "SUCCESS") {
+          throw new Error(`Failed to initialize and verify a new conversation in Gemini UI: ${resetVal || 'unknown error'}`);
+      }
   }
 }

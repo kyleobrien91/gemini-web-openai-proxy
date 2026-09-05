@@ -1,5 +1,9 @@
 import { createHash } from 'node:crypto';
+import http from 'node:http';
+import https from 'node:https';
+import dns from 'node:dns';
 import { lookup } from 'node:dns/promises';
+import net from 'node:net';
 import { MessageContentPart, Message } from '../types/openai.js';
 
 export const MAX_FILE_BYTES = 50 * 1024 * 1024; // 50MB
@@ -239,7 +243,7 @@ export function isIpv6PrivateOrReserved(ip: string): boolean {
   return false;
 }
 
-export async function resolveAndValidateHost(hostname: string): Promise<void> {
+export function validateHostnameOrIp(hostname: string): void {
   const normalizedHostname = hostname.toLowerCase().replace(/\.$/, '');
   if (
     normalizedHostname === 'localhost' ||
@@ -250,7 +254,70 @@ export async function resolveAndValidateHost(hostname: string): Promise<void> {
     throw new RequestExtractionError('Remote URL hostname is not permitted');
   }
 
-  const addresses = await lookup(normalizedHostname, { all: true, verbatim: true });
+  const ipFamily = net.isIP(normalizedHostname);
+  if (ipFamily === 4) {
+    if (isIpv4PrivateOrReserved(normalizedHostname)) {
+      throw new RequestExtractionError(`Remote URL resolves to a private or reserved address: ${normalizedHostname}`);
+    }
+  } else if (ipFamily === 6) {
+    if (isIpv6PrivateOrReserved(normalizedHostname)) {
+      throw new RequestExtractionError(`Remote URL resolves to a private or reserved address: ${normalizedHostname}`);
+    }
+  }
+}
+
+export function safeLookup(
+  hostname: string,
+  opts: any,
+  callback: (err: Error | null, address?: any, family?: number) => void,
+): void {
+  try {
+    validateHostnameOrIp(hostname);
+  } catch (err) {
+    return callback(err as Error);
+  }
+
+  const lookupOpts: dns.LookupAllOptions = {
+    all: true,
+    family: typeof opts?.family === 'number' ? opts.family : 0,
+    hints: typeof opts?.hints === 'number' ? opts.hints : undefined,
+  };
+
+  dns.lookup(hostname, lookupOpts, (err, addresses) => {
+    if (err) return callback(err);
+    if (!addresses || addresses.length === 0) {
+      return callback(new RequestExtractionError('Remote URL hostname could not be resolved'));
+    }
+
+    const safeAddresses: Array<{ address: string; family: number }> = [];
+    for (const addr of addresses) {
+      const isPrivate =
+        addr.family === 4
+          ? isIpv4PrivateOrReserved(addr.address)
+          : isIpv6PrivateOrReserved(addr.address);
+      if (isPrivate) {
+        return callback(
+          new RequestExtractionError(`Remote URL resolves to a private or reserved address: ${addr.address}`),
+        );
+      }
+      safeAddresses.push(addr);
+    }
+
+    if (opts && opts.all) {
+      return callback(null, safeAddresses);
+    }
+    const first = safeAddresses[0];
+    return callback(null, first.address, first.family);
+  });
+}
+
+export async function resolveAndValidateHost(hostname: string): Promise<void> {
+  validateHostnameOrIp(hostname);
+  if (net.isIP(hostname)) {
+    return;
+  }
+
+  const addresses = await lookup(hostname, { all: true, verbatim: true });
   if (addresses.length === 0) {
     throw new RequestExtractionError('Remote URL hostname could not be resolved');
   }
@@ -266,6 +333,80 @@ export async function resolveAndValidateHost(hostname: string): Promise<void> {
   }
 }
 
+interface SafeHttpResponse {
+  statusCode: number;
+  headers: http.IncomingHttpHeaders;
+  bytes: Buffer;
+}
+
+function safeHttpFetch(targetUrl: URL): Promise<SafeHttpResponse> {
+  return new Promise((resolve, reject) => {
+    try {
+      validateHostnameOrIp(targetUrl.hostname);
+    } catch (err) {
+      return reject(err);
+    }
+
+    const client = targetUrl.protocol === 'https:' ? https : http;
+    const req = client.request(
+      targetUrl,
+      {
+        method: 'GET',
+        lookup: safeLookup,
+        headers: {
+          accept: '*/*',
+          'user-agent': 'gemini-web-openai-proxy/1.0',
+        },
+      },
+      (res) => {
+        const statusCode = res.statusCode || 0;
+        const contentLength = res.headers['content-length'];
+        if (contentLength) {
+          const declaredLength = Number.parseInt(contentLength, 10);
+          if (Number.isFinite(declaredLength) && declaredLength > MAX_FILE_BYTES) {
+            res.resume();
+            return reject(new RequestExtractionError(`Remote file exceeds maximum size of ${MAX_FILE_BYTES} bytes`));
+          }
+        }
+
+        const chunks: Buffer[] = [];
+        let totalBytes = 0;
+
+        res.on('data', (chunk: Buffer) => {
+          totalBytes += chunk.length;
+          if (totalBytes > MAX_FILE_BYTES) {
+            res.destroy();
+            return reject(new RequestExtractionError(`Remote file exceeds maximum size of ${MAX_FILE_BYTES} bytes`));
+          }
+          chunks.push(chunk);
+        });
+
+        res.on('end', () => {
+          resolve({
+            statusCode,
+            headers: res.headers,
+            bytes: Buffer.concat(chunks, totalBytes),
+          });
+        });
+
+        res.on('error', (err) => {
+          reject(err);
+        });
+      },
+    );
+
+    req.setTimeout(30_000, () => {
+      req.destroy(new RequestExtractionError('Remote file fetch timed out after 30 seconds'));
+    });
+
+    req.on('error', (err) => {
+      reject(err);
+    });
+
+    req.end();
+  });
+}
+
 export async function fetchRemoteFile(urlString: string): Promise<{ bytes: Buffer; mimeType: string; filename: string }> {
   let currentUrl: URL;
   try {
@@ -279,24 +420,14 @@ export async function fetchRemoteFile(urlString: string): Promise<{ bytes: Buffe
       throw new RequestExtractionError('Only HTTP and HTTPS file URLs are supported');
     }
 
-    await resolveAndValidateHost(currentUrl.hostname);
+    const res = await safeHttpFetch(currentUrl);
 
-    const response = await fetch(currentUrl, {
-      method: 'GET',
-      redirect: 'manual',
-      signal: AbortSignal.timeout(30_000),
-      headers: {
-        accept: '*/*',
-        'user-agent': 'gemini-web-openai-proxy/1.0',
-      },
-    });
-
-    if (response.status >= 300 && response.status < 400) {
+    if (res.statusCode >= 300 && res.statusCode < 400) {
       if (redirect === 5) {
         throw new RequestExtractionError('Too many redirects while fetching file');
       }
-      const location = response.headers.get('location');
-      if (!location) {
+      const location = res.headers['location'];
+      if (!location || typeof location !== 'string') {
         throw new RequestExtractionError('Remote server returned an invalid redirect');
       }
       try {
@@ -307,43 +438,13 @@ export async function fetchRemoteFile(urlString: string): Promise<{ bytes: Buffe
       continue;
     }
 
-    if (!response.ok) {
-      throw new RequestExtractionError(`Failed to fetch remote file: HTTP ${response.status}`);
+    if (res.statusCode < 200 || res.statusCode >= 300) {
+      throw new RequestExtractionError(`Failed to fetch remote file: HTTP ${res.statusCode}`);
     }
 
-    const contentLength = response.headers.get('content-length');
-    if (contentLength) {
-      const declaredLength = Number.parseInt(contentLength, 10);
-      if (Number.isFinite(declaredLength) && declaredLength > MAX_FILE_BYTES) {
-        throw new RequestExtractionError(`Remote file exceeds maximum size of ${MAX_FILE_BYTES} bytes`);
-      }
-    }
-
-    if (!response.body) {
-      throw new RequestExtractionError('Remote response has no body');
-    }
-
-    const reader = response.body.getReader();
-    const chunks: Buffer[] = [];
-    let totalBytes = 0;
-
-    try {
-      while (true) {
-        const result = await reader.read();
-        if (result.done) break;
-        const chunk = Buffer.from(result.value);
-        totalBytes += chunk.length;
-        if (totalBytes > MAX_FILE_BYTES) {
-          throw new RequestExtractionError(`Remote file exceeds maximum size of ${MAX_FILE_BYTES} bytes`);
-        }
-        chunks.push(chunk);
-      }
-    } finally {
-      reader.releaseLock();
-    }
-
-    const bytes = Buffer.concat(chunks, totalBytes);
-    const headerMime = normaliseMimeType(response.headers.get('content-type') || undefined);
+    const bytes = res.bytes;
+    const headerContentType = typeof res.headers['content-type'] === 'string' ? res.headers['content-type'] : undefined;
+    const headerMime = normaliseMimeType(headerContentType);
     const magicMime = detectMagicMimeType(bytes);
     let mimeType = magicMime || headerMime;
 
@@ -373,7 +474,7 @@ export async function fetchRemoteFile(urlString: string): Promise<{ bytes: Buffe
     return { bytes, mimeType, filename };
   }
 
-  throw new RequestExtractionError('Failed to resolve remote file URL');
+  throw new RequestExtractionError('Too many redirects while fetching file');
 }
 
 export function validateBytesAndMime(bytes: Buffer, declaredMimeType: string | undefined, filename: string): string {

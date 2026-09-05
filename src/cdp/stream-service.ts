@@ -86,8 +86,10 @@ export class StreamService {
     };
 
     let streamError: Error | null = null;
+    let rejectCompletion: ((err: Error) => void) | null = null;
 
     const completionPromise = new Promise<void>((resolve, reject) => {
+      rejectCompletion = reject;
       onAbort = () => {
         rollback().then(() => reject(new Error('Request cancelled')));
       };
@@ -280,9 +282,25 @@ export class StreamService {
         awaitPromise: true,
         returnByValue: true,
       })
+      .then((res: any) => {
+        const val = res?.result?.value;
+        if (val && val.error) {
+          const err = new Error(`StreamService in-page execution error: ${val.error}`);
+          rollback().finally(() => {
+            if (rejectCompletion) {
+              rejectCompletion(err);
+            }
+          });
+        }
+      })
       .catch((err) => {
         // If evaluation fails or drops, notify completion promise
         console.error('StreamService evaluation failed:', err);
+        rollback().finally(() => {
+          if (rejectCompletion) {
+            rejectCompletion(err instanceof Error ? err : new Error(String(err)));
+          }
+        });
       });
 
     return {
