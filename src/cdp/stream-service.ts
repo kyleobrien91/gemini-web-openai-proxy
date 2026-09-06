@@ -41,6 +41,14 @@ export class StreamService {
     }
   }
 
+  private async safeRemoveBinding(name: string) {
+    try {
+      await this.cdp.send('Runtime.removeBinding', { name });
+    } catch (e: any) {
+      // Safe to ignore if already removed or target closed
+    }
+  }
+
   async streamGenerate(
     turnId: string,
     request: StreamGenerateRequest,
@@ -76,6 +84,9 @@ export class StreamService {
           }
           delete window['__proxyStreamState_${turnId}'];
         }
+        try {
+          delete window['${emitBindingName}'];
+        } catch (e) {}
       `;
 
       try {
@@ -83,6 +94,8 @@ export class StreamService {
       } catch (e) {
         // Target may already be closed
       }
+
+      await this.safeRemoveBinding(emitBindingName);
     };
 
     let streamError: Error | null = null;

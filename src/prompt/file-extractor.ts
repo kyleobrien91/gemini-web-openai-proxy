@@ -210,36 +210,146 @@ export function isIpv4PrivateOrReserved(ip: string): boolean {
   if (octets.length !== 4 || octets.some((part) => !Number.isInteger(part) || part < 0 || part > 255)) {
     return false;
   }
-  const [a, b] = octets;
+  const [a, b, c] = octets;
   return (
     a === 10 ||
     (a === 100 && b >= 64 && b <= 127) ||
     a === 127 ||
     (a === 169 && b === 254) ||
     (a === 172 && b >= 16 && b <= 31) ||
+    (a === 192 && b === 0 && c === 0) ||
+    (a === 192 && b === 0 && c === 2) ||
     (a === 192 && b === 168) ||
     (a === 198 && (b === 18 || b === 19)) ||
+    (a === 198 && b === 51 && c === 100) ||
+    (a === 203 && b === 0 && c === 113) ||
     a === 0 ||
     a >= 224
   );
 }
 
+export function parseIpv6(ip: string): number[] | null {
+  let clean = ip.toLowerCase().split('%', 1)[0].trim();
+
+  // If there is an IPv4 dotted-quad tail (e.g. ::ffff:127.0.0.1 or 64:ff9b::192.168.1.1)
+  const lastColon = clean.lastIndexOf(':');
+  if (lastColon !== -1) {
+    const tail = clean.slice(lastColon + 1);
+    if (tail.includes('.')) {
+      const octets = tail.split('.').map(Number);
+      if (
+        octets.length !== 4 ||
+        octets.some((n) => !Number.isInteger(n) || n < 0 || n > 255)
+      ) {
+        return null;
+      }
+      const hex1 = (((octets[0] << 8) | octets[1]) & 0xffff).toString(16);
+      const hex2 = (((octets[2] << 8) | octets[3]) & 0xffff).toString(16);
+      clean = clean.slice(0, lastColon + 1) + hex1 + ':' + hex2;
+    }
+  }
+
+  const doubleColonParts = clean.split('::');
+  if (doubleColonParts.length > 2) return null;
+
+  let parts: string[];
+  if (doubleColonParts.length === 2) {
+    const [leftStr, rightStr] = doubleColonParts;
+    const left = leftStr ? leftStr.split(':') : [];
+    const right = rightStr ? rightStr.split(':') : [];
+    const missing = 8 - (left.length + right.length);
+    if (missing < 1) return null;
+    parts = [...left, ...Array(missing).fill('0'), ...right];
+  } else {
+    parts = clean.split(':');
+  }
+
+  if (parts.length !== 8) return null;
+
+  const words: number[] = [];
+  for (const part of parts) {
+    if (!/^[0-9a-f]{1,4}$/.test(part)) return null;
+    const val = Number.parseInt(part, 16);
+    if (Number.isNaN(val) || val < 0 || val > 0xffff) return null;
+    words.push(val);
+  }
+  return words;
+}
+
 export function isIpv6PrivateOrReserved(ip: string): boolean {
-  const normalized = ip.toLowerCase().split('%', 1)[0];
-  if (normalized === '::1' || normalized === '::') return true;
-  if (normalized.startsWith('fc') || normalized.startsWith('fd')) return true;
-  if (
-    normalized.startsWith('fe8') ||
-    normalized.startsWith('fe9') ||
-    normalized.startsWith('fea') ||
-    normalized.startsWith('feb')
-  ) {
+  const words = parseIpv6(ip);
+  if (!words) {
+    // If it cannot be parsed as a valid IPv6 address, treat as unsafe
     return true;
   }
-  if (normalized.startsWith('::ffff:')) {
-    const mapped = normalized.slice('::ffff:'.length);
-    return isIpv4PrivateOrReserved(mapped);
+
+  // :: (unspecified) and ::1 (loopback)
+  const isAllZeroExceptLast = words.slice(0, 7).every((w) => w === 0);
+  if (isAllZeroExceptLast && (words[7] === 0 || words[7] === 1)) {
+    return true;
   }
+
+  // Unique local addresses fc00::/7 (fc00:: - fdff::)
+  if ((words[0] & 0xfe00) === 0xfc00) return true;
+
+  // Link-local unicast fe80::/10 (fe80:: - febf::)
+  if ((words[0] & 0xffc0) === 0xfe80) return true;
+
+  // Site-local unicast fec0::/10 (deprecated)
+  if ((words[0] & 0xffc0) === 0xfec0) return true;
+
+  // Multicast ff00::/8
+  if ((words[0] & 0xff00) === 0xff00) return true;
+
+  // Documentation prefix 2001:db8::/32
+  if (words[0] === 0x2001 && words[1] === 0x0db8) return true;
+
+  // Discard prefix 100::/64
+  if (words[0] === 0x0100 && words[1] === 0 && words[2] === 0 && words[3] === 0) return true;
+
+  // IPv4-mapped (::ffff:0:0/96) and IPv4-compatible (::/96)
+  if (
+    words[0] === 0 &&
+    words[1] === 0 &&
+    words[2] === 0 &&
+    words[3] === 0 &&
+    words[4] === 0 &&
+    (words[5] === 0xffff || words[5] === 0)
+  ) {
+    const byte1 = (words[6] >> 8) & 0xff;
+    const byte2 = words[6] & 0xff;
+    const byte3 = (words[7] >> 8) & 0xff;
+    const byte4 = words[7] & 0xff;
+    return isIpv4PrivateOrReserved(`${byte1}.${byte2}.${byte3}.${byte4}`);
+  }
+
+  // NAT64 well-known prefix (64:ff9b::/96)
+  if (
+    words[0] === 0x0064 &&
+    words[1] === 0xff9b &&
+    words[2] === 0 &&
+    words[3] === 0 &&
+    words[4] === 0 &&
+    words[5] === 0
+  ) {
+    const byte1 = (words[6] >> 8) & 0xff;
+    const byte2 = words[6] & 0xff;
+    const byte3 = (words[7] >> 8) & 0xff;
+    const byte4 = words[7] & 0xff;
+    return isIpv4PrivateOrReserved(`${byte1}.${byte2}.${byte3}.${byte4}`);
+  }
+
+  // 6to4 prefix (2002::/16)
+  if (words[0] === 0x2002) {
+    const byte1 = (words[1] >> 8) & 0xff;
+    const byte2 = words[1] & 0xff;
+    const byte3 = (words[2] >> 8) & 0xff;
+    const byte4 = words[2] & 0xff;
+    if (isIpv4PrivateOrReserved(`${byte1}.${byte2}.${byte3}.${byte4}`)) {
+      return true;
+    }
+  }
+
   return false;
 }
 
@@ -588,7 +698,7 @@ export async function resolveFilePart(part: Extract<MessageContentPart, { type: 
 export async function extractMultimodalMessages(messages: readonly Message[]): Promise<ExtractionResult> {
   let totalBytes = 0;
   let fileCount = 0;
-  const filesByHash = new Map<string, UploadableFile>();
+  const allFiles: UploadableFile[] = [];
   const extractedMessages: ExtractedMessage[] = [];
 
   for (const message of messages) {
@@ -626,13 +736,8 @@ export async function extractMultimodalMessages(messages: readonly Message[]): P
         throw new RequestExtractionError(`Cumulative file size exceeds ${MAX_REQUEST_BYTES} bytes`);
       }
 
-      const existing = filesByHash.get(file.sha256);
-      const resolvedFile = existing || file;
-      if (!existing) {
-        filesByHash.set(file.sha256, file);
-      }
-
-      parts.push({ kind: 'file', file: resolvedFile });
+      allFiles.push(file);
+      parts.push({ kind: 'file', file });
     }
 
     extractedMessages.push({
@@ -647,7 +752,7 @@ export async function extractMultimodalMessages(messages: readonly Message[]): P
 
   return {
     messages: extractedMessages,
-    files: [...filesByHash.values()],
+    files: allFiles,
     totalBytes,
   };
 }
