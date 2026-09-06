@@ -1,27 +1,31 @@
-import { CDPConnection } from './connection.js';
-import { getModel, resolveTargetModelId } from '../models/registry.js';
+import { getModel, resolveTargetModelId } from "../models/registry.js";
+import type { CDPConnection } from "./connection.js";
 
 export class ModeSwitcher {
-  private cdp: CDPConnection;
+	private cdp: CDPConnection;
 
-  constructor(cdp: CDPConnection) {
-    this.cdp = cdp;
-  }
+	constructor(cdp: CDPConnection) {
+		this.cdp = cdp;
+	}
 
-  async switchMode(modelName: string): Promise<void> {
-    const targetModelId = resolveTargetModelId(modelName);
-    if (!targetModelId) {
-      throw new Error(`Unknown model: ${modelName}. Supported models are 3.7-flash, 3.1-pro, 3.5-flash-lite, 2.5-pro, 2.5-flash.`);
-    }
+	async switchMode(modelName: string): Promise<void> {
+		const targetModelId = resolveTargetModelId(modelName);
+		if (!targetModelId) {
+			throw new Error(
+				`Unknown model: ${modelName}. Supported models are 3.7-flash, 3.1-pro, 3.5-flash-lite, 2.5-pro, 2.5-flash.`,
+			);
+		}
 
-    const targetModel = getModel(targetModelId);
-    if (!targetModel || !targetModel.webDomTestId) {
-      throw new Error(`Configuration error: resolved target model ${targetModelId} does not have a webDomTestId.`);
-    }
+		const targetModel = getModel(targetModelId);
+		if (!targetModel?.webDomTestId) {
+			throw new Error(
+				`Configuration error: resolved target model ${targetModelId} does not have a webDomTestId.`,
+			);
+		}
 
-    const testId = targetModel.webDomTestId;
+		const testId = targetModel.webDomTestId;
 
-    const script = `
+		const script = `
       (async function() {
         let menuBtn = null;
         for (let i = 0; i < 150; i++) {
@@ -116,30 +120,38 @@ export class ModeSwitcher {
       })();
     `;
 
-    try {
-      const res = await this.cdp.send('Runtime.evaluate', {
-        expression: script,
-        awaitPromise: true,
-        returnByValue: true
-      });
+		try {
+			const res = await this.cdp.send("Runtime.evaluate", {
+				expression: script,
+				awaitPromise: true,
+				returnByValue: true,
+			});
 
-      const val = res?.result?.value ?? res?.value;
-      if (res && val) {
-        if (val === "MENU_NOT_FOUND") {
-          throw new Error(`Model mode picker menu button not found in the Gemini UI.`);
-        }
-        if (val === "OPTION_NOT_FOUND") {
-          throw new Error(`Failed to locate model option for ${modelName} in the UI. Ensure your account has access to this model.`);
-        }
-        if (val !== "SUCCESS") {
-          throw new Error(`Model switch verification failed. Expected exact DOM state match for ${modelName} (${testId}), but UI indicates it is not selected. Debug state: ${val}`);
-        }
-      } else {
-        throw new Error(`Unexpected failure executing mode switch script.`);
-      }
-    } catch (e) {
-      console.error('Failed to switch model mode via CDP', e);
-      throw new Error(`Model switch failed for ${modelName}: ${(e as Error).message}`);
-    }
-  }
+			const val = res?.result?.value ?? res?.value;
+			if (res && val) {
+				if (val === "MENU_NOT_FOUND") {
+					throw new Error(
+						`Model mode picker menu button not found in the Gemini UI.`,
+					);
+				}
+				if (val === "OPTION_NOT_FOUND") {
+					throw new Error(
+						`Failed to locate model option for ${modelName} in the UI. Ensure your account has access to this model.`,
+					);
+				}
+				if (val !== "SUCCESS") {
+					throw new Error(
+						`Model switch verification failed. Expected exact DOM state match for ${modelName} (${testId}), but UI indicates it is not selected. Debug state: ${val}`,
+					);
+				}
+			} else {
+				throw new Error(`Unexpected failure executing mode switch script.`);
+			}
+		} catch (e) {
+			console.error("Failed to switch model mode via CDP", e);
+			throw new Error(
+				`Model switch failed for ${modelName}: ${(e as Error).message}`,
+			);
+		}
+	}
 }

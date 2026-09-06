@@ -1,13 +1,13 @@
-import { Tool } from '../types/openai.js';
+import type { Tool } from "../types/openai.js";
 
 export function injectToolSchemas(tools?: Tool[]): string {
-  if (!tools || tools.length === 0) {
-    return '';
-  }
+	if (!tools || tools.length === 0) {
+		return "";
+	}
 
-  const toolDefinitions = tools.map(t => t.function);
+	const toolDefinitions = tools.map((t) => t.function);
 
-  return `
+	return `
 [AVAILABLE TOOLS]
 The following tools are available for you to execute tasks:
 ${JSON.stringify(toolDefinitions, null, 2)}

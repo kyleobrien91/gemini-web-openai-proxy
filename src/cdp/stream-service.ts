@@ -1,81 +1,81 @@
-import { CDPConnection } from './connection.js';
-import { UploadedBlob } from './scotty-uploader.js';
+import type { CDPConnection } from "./connection.js";
+import type { UploadedBlob } from "./scotty-uploader.js";
 
 export interface StreamGenerateRequest {
-  model: string;
-  prompt: string;
-  blobs: UploadedBlob[];
+	model: string;
+	prompt: string;
+	blobs: UploadedBlob[];
 }
 
 export interface StreamGenerateHandle {
-  waitForCompletion: () => Promise<void>;
-  cleanup: () => Promise<void>;
+	waitForCompletion: () => Promise<void>;
+	cleanup: () => Promise<void>;
 }
 
 function serialiseForBrowser(value: unknown): string {
-  return JSON.stringify(value)
-    .replace(/\u2028/g, '\\u2028')
-    .replace(/\u2029/g, '\\u2029');
+	return JSON.stringify(value)
+		.replace(/\u2028/g, "\\u2028")
+		.replace(/\u2029/g, "\\u2029");
 }
 
 export class StreamService {
-  private readonly cdp: CDPConnection;
+	private readonly cdp: CDPConnection;
 
-  constructor(cdp: CDPConnection) {
-    this.cdp = cdp;
-  }
+	constructor(cdp: CDPConnection) {
+		this.cdp = cdp;
+	}
 
-  private async safeAddBinding(name: string) {
-    try {
-      await this.cdp.send('Runtime.addBinding', { name });
-    } catch (e: any) {
-      if (
-        e.message &&
-        (e.message.includes('Binding already exists') ||
-          e.message.includes('Binding with that name already exists'))
-      ) {
-        // Safe to ignore.
-      } else {
-        throw e;
-      }
-    }
-  }
+	private async safeAddBinding(name: string) {
+		try {
+			await this.cdp.send("Runtime.addBinding", { name });
+		} catch (e: any) {
+			if (
+				e.message &&
+				(e.message.includes("Binding already exists") ||
+					e.message.includes("Binding with that name already exists"))
+			) {
+				// Safe to ignore.
+			} else {
+				throw e;
+			}
+		}
+	}
 
-  private async safeRemoveBinding(name: string) {
-    try {
-      await this.cdp.send('Runtime.removeBinding', { name });
-    } catch (e: any) {
-      // Safe to ignore if already removed or target closed.
-    }
-  }
+	private async safeRemoveBinding(name: string) {
+		try {
+			await this.cdp.send("Runtime.removeBinding", { name });
+		} catch (_e: any) {
+			// Safe to ignore if already removed or target closed.
+		}
+	}
 
-  async streamGenerate(
-    turnId: string,
-    request: StreamGenerateRequest,
-    onToken: (token: string) => void,
-    signal?: AbortSignal,
-  ): Promise<StreamGenerateHandle> {
-    if (signal?.aborted) {
-      throw new Error('Request cancelled');
-    }
+	async streamGenerate(
+		turnId: string,
+		request: StreamGenerateRequest,
+		onToken: (token: string) => void,
+		signal?: AbortSignal,
+	): Promise<StreamGenerateHandle> {
+		if (signal?.aborted) {
+			throw new Error("Request cancelled");
+		}
 
-    const emitBindingName = `__proxyStreamEmitToken_${turnId}`;
-    await this.safeAddBinding(emitBindingName);
+		const emitBindingName = `__proxyStreamEmitToken_${turnId}`;
+		await this.safeAddBinding(emitBindingName);
 
-    let bindingHandler: ((event: any) => void) | undefined;
-    let onDisconnect: (() => void) | undefined;
-    let onAbort: (() => void) | undefined;
-    let isCleanedUp = false;
+		let bindingHandler: ((event: any) => void) | undefined;
+		let onDisconnect: (() => void) | undefined;
+		let onAbort: (() => void) | undefined;
+		let isCleanedUp = false;
 
-    const rollback = async () => {
-      if (isCleanedUp) return;
-      isCleanedUp = true;
+		const rollback = async () => {
+			if (isCleanedUp) return;
+			isCleanedUp = true;
 
-      if (bindingHandler) this.cdp.off('Runtime.bindingCalled', bindingHandler);
-      if (onDisconnect) this.cdp.offDisconnect(onDisconnect);
-      if (signal && onAbort) signal.removeEventListener('abort', onAbort);
+			if (bindingHandler) this.cdp.off("Runtime.bindingCalled", bindingHandler);
+			if (onDisconnect) this.cdp.offDisconnect(onDisconnect);
+			if (signal && onAbort) signal.removeEventListener("abort", onAbort);
 
-      const cleanupScript = `
+			const cleanupScript = `
         const streamState = window['__proxyStreamState_${turnId}'];
         if (streamState) {
           streamState.aborted = true;
@@ -89,71 +89,76 @@ export class StreamService {
         } catch (e) {}
       `;
 
-      try {
-        await this.cdp.send('Runtime.evaluate', { expression: cleanupScript, awaitPromise: true });
-      } catch (e) {
-        // Target may already be closed.
-      }
+			try {
+				await this.cdp.send("Runtime.evaluate", {
+					expression: cleanupScript,
+					awaitPromise: true,
+				});
+			} catch (_e) {
+				// Target may already be closed.
+			}
 
-      await this.safeRemoveBinding(emitBindingName);
-    };
+			await this.safeRemoveBinding(emitBindingName);
+		};
 
-    let rejectCompletion: ((err: Error) => void) | null = null;
+		let rejectCompletion: ((err: Error) => void) | null = null;
 
-    const completionPromise = new Promise<void>((resolve, reject) => {
-      rejectCompletion = reject;
-      onAbort = () => {
-        rollback().then(() => reject(new Error('Request cancelled')));
-      };
+		const completionPromise = new Promise<void>((resolve, reject) => {
+			rejectCompletion = reject;
+			onAbort = () => {
+				rollback().then(() => reject(new Error("Request cancelled")));
+			};
 
-      if (signal) {
-        if (signal.aborted) {
-          return reject(new Error('Request already cancelled'));
-        }
-        signal.addEventListener('abort', onAbort);
-      }
+			if (signal) {
+				if (signal.aborted) {
+					return reject(new Error("Request already cancelled"));
+				}
+				signal.addEventListener("abort", onAbort);
+			}
 
-      onDisconnect = () => {
-        rollback().then(() => reject(new Error('CDP WebSocket disconnected during stream')));
-      };
-      this.cdp.onDisconnect(onDisconnect);
+			onDisconnect = () => {
+				rollback().then(() =>
+					reject(new Error("CDP WebSocket disconnected during stream")),
+				);
+			};
+			this.cdp.onDisconnect(onDisconnect);
 
-      bindingHandler = (event: any) => {
-        if (event.name !== emitBindingName) return;
+			bindingHandler = (event: any) => {
+				if (event.name !== emitBindingName) return;
 
-        try {
-          const data = JSON.parse(event.payload);
-          if (data.type === 'token') {
-            if (typeof data.token !== 'string') {
-              throw new Error('StreamGenerate emitted a non-string token');
-            }
-            onToken(data.token);
-          } else if (data.type === 'complete') {
-            resolve();
-          } else if (data.type === 'error') {
-            reject(new Error(data.message || 'Stream generation error'));
-          }
-        } catch (err) {
-          reject(err instanceof Error ? err : new Error(String(err)));
-        }
-      };
+				try {
+					const data = JSON.parse(event.payload);
+					if (data.type === "token") {
+						if (typeof data.token !== "string") {
+							throw new Error("StreamGenerate emitted a non-string token");
+						}
+						onToken(data.token);
+					} else if (data.type === "complete") {
+						resolve();
+					} else if (data.type === "error") {
+						reject(new Error(data.message || "Stream generation error"));
+					}
+				} catch (err) {
+					reject(err instanceof Error ? err : new Error(String(err)));
+				}
+			};
 
-      this.cdp.on('Runtime.bindingCalled', bindingHandler);
-    });
+			this.cdp.on("Runtime.bindingCalled", bindingHandler);
+		});
 
-    const browserInput = {
-      turnId,
-      emitBindingName,
-      prompt: request.prompt,
-      blobs: request.blobs.map((b) => ({
-        blobUrl: b.blobUrl,
-        mimeType: b.mimeType,
-        filename: b.filename,
-        typeCode: b.typeCode,
-      })),
-    };
+		const browserInput = {
+			turnId,
+			emitBindingName,
+			prompt: request.prompt,
+			blobs: request.blobs.map((b) => ({
+				blobUrl: b.blobUrl,
+				mimeType: b.mimeType,
+				filename: b.filename,
+				typeCode: b.typeCode,
+			})),
+		};
 
-    const script = `
+		const script = `
       (async function(input) {
         const emitBinding = window[input.emitBindingName];
         if (typeof emitBinding !== 'function') {
@@ -317,29 +322,33 @@ export class StreamService {
       })(${serialiseForBrowser(browserInput)})
     `;
 
-    this.cdp
-      .send('Runtime.evaluate', {
-        expression: script,
-        awaitPromise: true,
-        returnByValue: true,
-      })
-      .then((res: any) => {
-        const val = res?.result?.value;
-        if (val && val.error && rejectCompletion) {
-          const err = new Error(`StreamService in-page execution error: ${val.error}`);
-          rollback().finally(() => rejectCompletion?.(err));
-        }
-      })
-      .catch((err) => {
-        console.error('StreamService evaluation failed:', err);
-        rollback().finally(() => {
-          rejectCompletion?.(err instanceof Error ? err : new Error(String(err)));
-        });
-      });
+		this.cdp
+			.send("Runtime.evaluate", {
+				expression: script,
+				awaitPromise: true,
+				returnByValue: true,
+			})
+			.then((res: any) => {
+				const val = res?.result?.value;
+				if (val?.error && rejectCompletion) {
+					const err = new Error(
+						`StreamService in-page execution error: ${val.error}`,
+					);
+					rollback().finally(() => rejectCompletion?.(err));
+				}
+			})
+			.catch((err) => {
+				console.error("StreamService evaluation failed:", err);
+				rollback().finally(() => {
+					rejectCompletion?.(
+						err instanceof Error ? err : new Error(String(err)),
+					);
+				});
+			});
 
-    return {
-      waitForCompletion: () => completionPromise,
-      cleanup: rollback,
-    };
-  }
+		return {
+			waitForCompletion: () => completionPromise,
+			cleanup: rollback,
+		};
+	}
 }

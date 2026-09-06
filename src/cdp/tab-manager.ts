@@ -1,102 +1,116 @@
-import { CDPConnection } from './connection.js';
+import type { CDPConnection } from "./connection.js";
 
 export class TabManager {
-  private cdp: CDPConnection;
+	private cdp: CDPConnection;
 
-  constructor(cdp: CDPConnection) {
-    this.cdp = cdp;
-  }
+	constructor(cdp: CDPConnection) {
+		this.cdp = cdp;
+	}
 
-  async ensureGeminiTab(): Promise<void> {
-    if (!this.cdp.targetId) {
-      throw new Error("No target ID associated with connection");
-    }
+	async ensureGeminiTab(): Promise<void> {
+		if (!this.cdp.targetId) {
+			throw new Error("No target ID associated with connection");
+		}
 
-    await this.resetChatSession();
-  }
+		await this.resetChatSession();
+	}
 
-  async resetChatSession(): Promise<void> {
-    let currentUrl = '';
-    try {
-      const urlCheck = await this.cdp.send('Runtime.evaluate', {
-        expression: 'window.location.href',
-        returnByValue: true
-      });
-      currentUrl = urlCheck?.result?.value || '';
-    } catch (e) {
-      // Ignore error reading URL; navigation below will establish the page context.
-    }
+	async resetChatSession(): Promise<void> {
+		let currentUrl = "";
+		try {
+			const urlCheck = await this.cdp.send("Runtime.evaluate", {
+				expression: "window.location.href",
+				returnByValue: true,
+			});
+			currentUrl = urlCheck?.result?.value || "";
+		} catch (_e) {
+			// Ignore error reading URL; navigation below will establish the page context.
+		}
 
-    if (!currentUrl.includes('gemini.google.com')) {
-      await this.cdp.send('Page.setLifecycleEventsEnabled', { enabled: true });
+		if (!currentUrl.includes("gemini.google.com")) {
+			await this.cdp.send("Page.setLifecycleEventsEnabled", { enabled: true });
 
-      await new Promise<void>(async (resolve, reject) => {
-        let timeoutId: NodeJS.Timeout;
-        let expectedLoaderId: string | null = null;
-        let expectedFrameId: string | null = null;
-        let hasNavigated = false;
-        const pendingEvents: any[] = [];
+			await new Promise<void>((resolve, reject) => {
+				let timeoutId: NodeJS.Timeout;
+				let expectedLoaderId: string | null = null;
+				let expectedFrameId: string | null = null;
+				let hasNavigated = false;
+				const pendingEvents: any[] = [];
 
-        const lifecycleHandler = (event: any) => {
-          if (!hasNavigated) {
-            pendingEvents.push(event);
-            return;
-          }
-          processLifecycleEvent(event);
-        };
+				const cleanup = () => {
+					clearTimeout(timeoutId);
+					this.cdp.off("Page.lifecycleEvent", lifecycleHandler);
+				};
 
-        const processLifecycleEvent = (event: any) => {
-          if (expectedLoaderId && event.loaderId !== expectedLoaderId) return;
-          if (expectedFrameId && event.frameId !== expectedFrameId) return;
+				const processLifecycleEvent = (event: any) => {
+					if (expectedLoaderId && event.loaderId !== expectedLoaderId) return;
+					if (expectedFrameId && event.frameId !== expectedFrameId) return;
 
-          if (event.name === 'load' || event.name === 'DOMContentLoaded' || event.name === 'networkAlmostIdle') {
-            cleanup();
-            resolve();
-          }
-        };
+					if (
+						event.name === "load" ||
+						event.name === "DOMContentLoaded" ||
+						event.name === "networkAlmostIdle"
+					) {
+						cleanup();
+						resolve();
+					}
+				};
 
-        const cleanup = () => {
-          clearTimeout(timeoutId);
-          this.cdp.off('Page.lifecycleEvent', lifecycleHandler);
-        };
+				const lifecycleHandler = (event: any) => {
+					if (!hasNavigated) {
+						pendingEvents.push(event);
+						return;
+					}
+					processLifecycleEvent(event);
+				};
 
-        this.cdp.on('Page.lifecycleEvent', lifecycleHandler);
-        timeoutId = setTimeout(() => {
-          cleanup();
-          reject(new Error("Timeout waiting for Page.lifecycleEvent 'load' during resetChatSession"));
-        }, 10000);
+				this.cdp.on("Page.lifecycleEvent", lifecycleHandler);
+				timeoutId = setTimeout(() => {
+					cleanup();
+					reject(
+						new Error(
+							"Timeout waiting for Page.lifecycleEvent 'load' during resetChatSession",
+						),
+					);
+				}, 10000);
 
-        try {
-          const res = await this.cdp.send('Page.navigate', { url: 'https://gemini.google.com/app' });
-          if (res.errorText) {
-            cleanup();
-            return reject(new Error(`Page navigation failed: ${res.errorText}`));
-          }
+				this.cdp
+					.send("Page.navigate", {
+						url: "https://gemini.google.com/app",
+					})
+					.then((res) => {
+						if (res.errorText) {
+							cleanup();
+							return reject(
+								new Error(`Page navigation failed: ${res.errorText}`),
+							);
+						}
 
-          if (!res.loaderId) {
-            cleanup();
-            return resolve();
-          }
+						if (!res.loaderId) {
+							cleanup();
+							return resolve();
+						}
 
-          expectedLoaderId = res.loaderId;
-          expectedFrameId = res.frameId;
-          hasNavigated = true;
+						expectedLoaderId = res.loaderId;
+						expectedFrameId = res.frameId;
+						hasNavigated = true;
 
-          for (const event of pendingEvents) {
-            processLifecycleEvent(event);
-          }
-        } catch (e) {
-          cleanup();
-          return reject(e);
-        }
-      });
+						for (const event of pendingEvents) {
+							processLifecycleEvent(event);
+						}
+					})
+					.catch((e) => {
+						cleanup();
+						reject(e);
+					});
+			});
 
-      await new Promise(r => setTimeout(r, 1000));
-    }
+			await new Promise((r) => setTimeout(r, 1000));
+		}
 
-    // A clean-looking DOM is not sufficient proof that the New Chat control exists.
-    // Always wait for that control and never silently accept a missing selector.
-    const script = `
+		// A clean-looking DOM is not sufficient proof that the New Chat control exists.
+		// Always wait for that control and never silently accept a missing selector.
+		const script = `
       (async function() {
         const findNewChatBtn = () => {
           return document.querySelector(
@@ -145,15 +159,17 @@ export class TabManager {
       })();
     `;
 
-    const resetRes = await this.cdp.send('Runtime.evaluate', {
-      expression: script,
-      awaitPromise: true,
-      returnByValue: true
-    });
+		const resetRes = await this.cdp.send("Runtime.evaluate", {
+			expression: script,
+			awaitPromise: true,
+			returnByValue: true,
+		});
 
-    const resetVal = resetRes?.result?.value ?? resetRes?.value;
-    if (!resetRes || resetVal !== "SUCCESS") {
-      throw new Error(`Failed to initialize and verify a new conversation in Gemini UI: ${resetVal || 'unknown error'}`);
-    }
-  }
+		const resetVal = resetRes?.result?.value ?? resetRes?.value;
+		if (!resetRes || resetVal !== "SUCCESS") {
+			throw new Error(
+				`Failed to initialize and verify a new conversation in Gemini UI: ${resetVal || "unknown error"}`,
+			);
+		}
+	}
 }

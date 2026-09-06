@@ -1,63 +1,70 @@
-import { BlobCache, blobCache, BlobCacheEntry } from './blob-cache.js';
-import { CDPConnection } from './connection.js';
-import { UploadableFile } from '../prompt/file-extractor.js';
+import type { UploadableFile } from "../prompt/file-extractor.js";
+import {
+	type BlobCache,
+	type BlobCacheEntry,
+	blobCache,
+} from "./blob-cache.js";
+import type { CDPConnection } from "./connection.js";
 
 export interface UploadedBlob extends BlobCacheEntry {
-  sha256: string;
+	sha256: string;
 }
 
 export interface ScottyUploaderOptions {
-  cache?: BlobCache;
+	cache?: BlobCache;
 }
 
 interface RuntimeEvaluationResult {
-  result?: {
-    value?: any;
-  };
-  value?: any;
+	result?: {
+		value?: any;
+	};
+	value?: any;
 }
 
 function serialiseForBrowser(value: unknown): string {
-  return JSON.stringify(value)
-    .replace(/\u2028/g, '\\u2028')
-    .replace(/\u2029/g, '\\u2029');
+	return JSON.stringify(value)
+		.replace(/\u2028/g, "\\u2028")
+		.replace(/\u2029/g, "\\u2029");
 }
 
 export class ScottyUploader {
-  private readonly cdp: CDPConnection;
-  private readonly cache: BlobCache;
+	private readonly cdp: CDPConnection;
+	private readonly cache: BlobCache;
 
-  constructor(cdp: CDPConnection, options: ScottyUploaderOptions = {}) {
-    this.cdp = cdp;
-    this.cache = options.cache ?? blobCache;
-  }
+	constructor(cdp: CDPConnection, options: ScottyUploaderOptions = {}) {
+		this.cdp = cdp;
+		this.cache = options.cache ?? blobCache;
+	}
 
-  async upload(file: UploadableFile, signal?: AbortSignal): Promise<UploadedBlob> {
-    const typeCode = file.mimeType.startsWith('image/') ? 1 : 16;
-    const cached = this.cache.get(file.sha256);
-    if (cached) {
-      return {
-        ...cached,
-        sha256: file.sha256,
-        filename: file.filename,
-        mimeType: file.mimeType,
-        typeCode,
-      };
-    }
+	async upload(
+		file: UploadableFile,
+		signal?: AbortSignal,
+	): Promise<UploadedBlob> {
+		const typeCode = file.mimeType.startsWith("image/") ? 1 : 16;
+		const cached = this.cache.get(file.sha256);
+		if (cached) {
+			return {
+				...cached,
+				sha256: file.sha256,
+				filename: file.filename,
+				mimeType: file.mimeType,
+				typeCode,
+			};
+		}
 
-    if (signal?.aborted) {
-      throw new Error('Upload cancelled');
-    }
+		if (signal?.aborted) {
+			throw new Error("Upload cancelled");
+		}
 
-    const base64Data = file.bytes.toString('base64');
-    const input = {
-      filename: file.filename,
-      mimeType: file.mimeType,
-      dataBase64: base64Data,
-      typeCode,
-    };
+		const base64Data = file.bytes.toString("base64");
+		const input = {
+			filename: file.filename,
+			mimeType: file.mimeType,
+			dataBase64: base64Data,
+			typeCode,
+		};
 
-    const script = `
+		const script = `
       (async function(input) {
         const decodeBase64 = (value) => {
           const binary = atob(value);
@@ -134,54 +141,64 @@ export class ScottyUploader {
       })(${serialiseForBrowser(input)})
     `;
 
-    const response = (await this.cdp.send('Runtime.evaluate', {
-      expression: script,
-      awaitPromise: true,
-      returnByValue: true,
-    })) as RuntimeEvaluationResult;
+		const response = (await this.cdp.send("Runtime.evaluate", {
+			expression: script,
+			awaitPromise: true,
+			returnByValue: true,
+		})) as RuntimeEvaluationResult;
 
-    const value = response?.result?.value ?? response?.value;
+		const value = response?.result?.value ?? response?.value;
 
-    if (!value || typeof value !== 'object' || typeof value.blobUrl !== 'string') {
-      throw new Error(`Scotty upload failed: ${JSON.stringify(value)}`);
-    }
+		if (
+			!value ||
+			typeof value !== "object" ||
+			typeof value.blobUrl !== "string"
+		) {
+			throw new Error(`Scotty upload failed: ${JSON.stringify(value)}`);
+		}
 
-    if (signal?.aborted) {
-      throw new Error('Upload cancelled');
-    }
+		if (signal?.aborted) {
+			throw new Error("Upload cancelled");
+		}
 
-    this.cache.set(file.sha256, {
-      blobUrl: value.blobUrl,
-      mimeType: value.mimeType,
-      filename: value.filename,
-      typeCode: value.typeCode,
-    });
+		this.cache.set(file.sha256, {
+			blobUrl: value.blobUrl,
+			mimeType: value.mimeType,
+			filename: value.filename,
+			typeCode: value.typeCode,
+		});
 
-    const entry = this.cache.get(file.sha256);
-    if (!entry) {
-      throw new Error('BlobStore cache insertion failed after upload');
-    }
+		const entry = this.cache.get(file.sha256);
+		if (!entry) {
+			throw new Error("BlobStore cache insertion failed after upload");
+		}
 
-    return {
-      ...entry,
-      sha256: file.sha256,
-      filename: file.filename,
-      mimeType: file.mimeType,
-      typeCode,
-    };
-  }
+		return {
+			...entry,
+			sha256: file.sha256,
+			filename: file.filename,
+			mimeType: file.mimeType,
+			typeCode,
+		};
+	}
 
-  async uploadAll(files: UploadableFile[], signal?: AbortSignal): Promise<UploadedBlob[]> {
-    const results: UploadedBlob[] = [];
-    for (const file of files) {
-      if (signal?.aborted) throw new Error('Upload cancelled');
-      const uploaded = await this.upload(file, signal);
-      results.push(uploaded);
-    }
-    return results;
-  }
+	async uploadAll(
+		files: UploadableFile[],
+		signal?: AbortSignal,
+	): Promise<UploadedBlob[]> {
+		const results: UploadedBlob[] = [];
+		for (const file of files) {
+			if (signal?.aborted) throw new Error("Upload cancelled");
+			const uploaded = await this.upload(file, signal);
+			results.push(uploaded);
+		}
+		return results;
+	}
 }
 
-export function createScottyUploader(cdp: CDPConnection, cache?: BlobCache): ScottyUploader {
-  return new ScottyUploader(cdp, { cache });
+export function createScottyUploader(
+	cdp: CDPConnection,
+	cache?: BlobCache,
+): ScottyUploader {
+	return new ScottyUploader(cdp, { cache });
 }
