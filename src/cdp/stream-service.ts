@@ -34,7 +34,7 @@ export class StreamService {
         (e.message.includes('Binding already exists') ||
           e.message.includes('Binding with that name already exists'))
       ) {
-        // Safe to ignore
+        // Safe to ignore.
       } else {
         throw e;
       }
@@ -45,7 +45,7 @@ export class StreamService {
     try {
       await this.cdp.send('Runtime.removeBinding', { name });
     } catch (e: any) {
-      // Safe to ignore if already removed or target closed
+      // Safe to ignore if already removed or target closed.
     }
   }
 
@@ -92,13 +92,12 @@ export class StreamService {
       try {
         await this.cdp.send('Runtime.evaluate', { expression: cleanupScript, awaitPromise: true });
       } catch (e) {
-        // Target may already be closed
+        // Target may already be closed.
       }
 
       await this.safeRemoveBinding(emitBindingName);
     };
 
-    let streamError: Error | null = null;
     let rejectCompletion: ((err: Error) => void) | null = null;
 
     const completionPromise = new Promise<void>((resolve, reject) => {
@@ -120,20 +119,22 @@ export class StreamService {
       this.cdp.onDisconnect(onDisconnect);
 
       bindingHandler = (event: any) => {
-        if (event.name === emitBindingName) {
-          try {
-            const data = JSON.parse(event.payload);
-            if (data.type === 'token') {
-              onToken(data.token);
-            } else if (data.type === 'complete') {
-              resolve();
-            } else if (data.type === 'error') {
-              streamError = new Error(data.message || 'Stream generation error');
-              reject(streamError);
+        if (event.name !== emitBindingName) return;
+
+        try {
+          const data = JSON.parse(event.payload);
+          if (data.type === 'token') {
+            if (typeof data.token !== 'string') {
+              throw new Error('StreamGenerate emitted a non-string token');
             }
-          } catch (err) {
-            console.error('Failed to parse stream event payload:', err);
+            onToken(data.token);
+          } else if (data.type === 'complete') {
+            resolve();
+          } else if (data.type === 'error') {
+            reject(new Error(data.message || 'Stream generation error'));
           }
+        } catch (err) {
+          reject(err instanceof Error ? err : new Error(String(err)));
         }
       };
 
@@ -213,6 +214,40 @@ export class StreamService {
           '&f.sid=' + encodeURIComponent(fsid || '') +
           '&hl=en-GB&_reqid=' + reqId + '&rt=c';
 
+        let sawProtocolFrame = false;
+        let sawCandidateText = false;
+        let lastEmittedLength = 0;
+
+        const processLine = (line) => {
+          const trimmed = line.trim();
+          if (!trimmed || trimmed.startsWith(")]}'") || /^\\d+$/.test(trimmed)) {
+            return;
+          }
+
+          const parsed = JSON.parse(trimmed);
+          if (!Array.isArray(parsed)) {
+            throw new Error('StreamGenerate returned an unexpected frame shape');
+          }
+
+          for (const item of parsed) {
+            if (!Array.isArray(item) || item[0] !== 'wrb.fr') continue;
+            sawProtocolFrame = true;
+
+            if (typeof item[2] !== 'string') continue;
+            const inner = JSON.parse(item[2]);
+            const currentText = inner?.[4]?.[0]?.[1]?.[0];
+
+            if (typeof currentText === 'string') {
+              sawCandidateText = true;
+              if (currentText.length > lastEmittedLength) {
+                const delta = currentText.slice(lastEmittedLength);
+                lastEmittedLength = currentText.length;
+                emit('token', { token: delta });
+              }
+            }
+          }
+        };
+
         try {
           const resp = await fetch(streamUrl, {
             method: 'POST',
@@ -228,67 +263,60 @@ export class StreamService {
             return { error: 'HTTP_' + resp.status };
           }
 
+          if (!resp.body) {
+            emit('error', { message: 'StreamGenerate response did not contain a readable body' });
+            return { error: 'EMPTY_RESPONSE_BODY' };
+          }
+
           const reader = resp.body.getReader();
           state.reader = reader;
           const decoder = new TextDecoder();
           let buffer = '';
-          let lastEmittedLength = 0;
 
           while (true) {
             if (state.aborted) {
-              try { reader.cancel(); } catch (e) {}
-              break;
+              try { await reader.cancel(); } catch (e) {}
+              return { error: 'ABORTED' };
             }
 
             const { done, value } = await reader.read();
             if (done) break;
 
             buffer += decoder.decode(value, { stream: true });
-
             const lines = buffer.split('\\n');
             buffer = lines.pop() || '';
 
             for (const line of lines) {
-              const trimmed = line.trim();
-              if (!trimmed || trimmed.startsWith(\")]}'\") || /^\\d+$/.test(trimmed)) {
-                continue;
-              }
-
-              try {
-                const parsed = JSON.parse(trimmed);
-                if (Array.isArray(parsed)) {
-                  for (const item of parsed) {
-                    if (Array.isArray(item) && item[0] === 'wrb.fr' && typeof item[2] === 'string') {
-                      const inner = JSON.parse(item[2]);
-                      if (inner && inner[4] && inner[4][0] && inner[4][0][1] && typeof inner[4][0][1][0] === 'string') {
-                        const currentText = inner[4][0][1][0];
-                        if (currentText.length > lastEmittedLength) {
-                          const delta = currentText.slice(lastEmittedLength);
-                          lastEmittedLength = currentText.length;
-                          emit('token', { token: delta });
-                        }
-                      }
-                    }
-                  }
-                }
-              } catch (e) {
-                // Incomplete JSON fragment, continue buffering
-              }
+              processLine(line);
             }
+          }
+
+          buffer += decoder.decode();
+          if (buffer.trim()) {
+            processLine(buffer);
+          }
+
+          if (!sawProtocolFrame) {
+            emit('error', { message: 'StreamGenerate completed without a recognised protocol frame' });
+            return { error: 'NO_PROTOCOL_FRAME' };
+          }
+
+          if (!sawCandidateText) {
+            emit('error', { message: 'StreamGenerate completed without a recognised candidate response' });
+            return { error: 'NO_CANDIDATE_TEXT' };
           }
 
           emit('complete');
           return { success: true, totalLength: lastEmittedLength };
         } catch (err) {
-          emit('error', { message: err.message || 'Unknown stream error' });
-          return { error: err.message };
+          emit('error', { message: err?.message || 'Unknown stream error' });
+          return { error: err?.message || 'Unknown stream error' };
         } finally {
           delete window['__proxyStreamState_' + input.turnId];
         }
       })(${serialiseForBrowser(browserInput)})
     `;
 
-    // Trigger asynchronous stream evaluation inside page context
     this.cdp
       .send('Runtime.evaluate', {
         expression: script,
@@ -297,22 +325,15 @@ export class StreamService {
       })
       .then((res: any) => {
         const val = res?.result?.value;
-        if (val && val.error) {
+        if (val && val.error && rejectCompletion) {
           const err = new Error(`StreamService in-page execution error: ${val.error}`);
-          rollback().finally(() => {
-            if (rejectCompletion) {
-              rejectCompletion(err);
-            }
-          });
+          rollback().finally(() => rejectCompletion?.(err));
         }
       })
       .catch((err) => {
-        // If evaluation fails or drops, notify completion promise
         console.error('StreamService evaluation failed:', err);
         rollback().finally(() => {
-          if (rejectCompletion) {
-            rejectCompletion(err instanceof Error ? err : new Error(String(err)));
-          }
+          rejectCompletion?.(err instanceof Error ? err : new Error(String(err)));
         });
       });
 
