@@ -12,6 +12,7 @@ import {
 import { normalizeMessages } from "../prompt/normalizer.js";
 import { ChatCompletionRequestSchema, type Tool } from "../types/openai.js";
 import { Mutex } from "../utils/mutex.js";
+import { RequestTrace } from "../utils/request-trace.js";
 import {
 	createContentChunk,
 	createDoneChunk,
@@ -91,6 +92,8 @@ router.post("/v1/chat/completions", async (req, res) => {
 		const chatId = `chatcmpl-${uuidv4()}`;
 		const model = request.model;
 
+		const trace = new RequestTrace(chatId);
+
 		const abortController = new AbortController();
 		const { signal } = abortController;
 
@@ -115,7 +118,9 @@ router.post("/v1/chat/completions", async (req, res) => {
 
 		// Coordinate Request locking the Mutex across retries
 		// We pass signal so if we time out or cancel while waiting, we don't acquire the lock
+		trace.start("mutex.wait");
 		const acquired = await routeMutex.lock(signal);
+		trace.end("mutex.wait");
 		if (!acquired) {
 			cleanup();
 			if (!res.headersSent && !res.writableEnded) {
@@ -223,6 +228,7 @@ router.post("/v1/chat/completions", async (req, res) => {
 					signal,
 					isRetry,
 					extraction.files,
+					trace,
 				);
 
 				if (signal.aborted && process.env.NODE_ENV !== "test") {
@@ -357,6 +363,7 @@ router.post("/v1/chat/completions", async (req, res) => {
 				res.end();
 			}
 		} finally {
+			trace.finish();
 			routeMutex.unlock();
 			cleanup();
 		}

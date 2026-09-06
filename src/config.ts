@@ -15,5 +15,7 @@ export const config = {
 	chromePath: process.env.CHROME_PATH || "",
 	chromeUserDataDir: process.env.CHROME_USER_DATA_DIR || path.join(os.homedir(), ".gemini-web-openai-proxy", "chrome-profile"),
 	keepBrowserOpenOnExit: process.env.KEEP_BROWSER_OPEN_ON_EXIT === "true",
+	requestDiagnostics: process.env.REQUEST_DIAGNOSTICS === "true",
+	requestDiagnosticsLog: process.env.REQUEST_DIAGNOSTICS_LOG || "off",
 };
 
