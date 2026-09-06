@@ -16,7 +16,7 @@ export class ModeSwitcher {
 
     const targetModel = getModel(targetModelId);
     if (!targetModel || !targetModel.webDomTestId) {
-         throw new Error(`Configuration error: resolved target model ${targetModelId} does not have a webDomTestId.`);
+      throw new Error(`Configuration error: resolved target model ${targetModelId} does not have a webDomTestId.`);
     }
 
     const testId = targetModel.webDomTestId;
@@ -25,14 +25,14 @@ export class ModeSwitcher {
       (async function() {
         let menuBtn = null;
         for (let i = 0; i < 150; i++) {
-            const editor = document.querySelector('.ql-editor');
-            if (editor && i % 5 === 0) {
-                editor.focus();
-                editor.dispatchEvent(new Event('focus', { bubbles: true }));
-            }
-            menuBtn = document.querySelector('button[data-test-id="bard-mode-menu-button"], button[aria-label*="mode picker"], .input-area-switch');
-            if (menuBtn) break;
-            await new Promise(r => setTimeout(r, 100));
+          const editor = document.querySelector('.ql-editor');
+          if (editor && i % 5 === 0) {
+            editor.focus();
+            editor.dispatchEvent(new Event('focus', { bubbles: true }));
+          }
+          menuBtn = document.querySelector('button[data-test-id="bard-mode-menu-button"], button[aria-label*="mode picker"], .input-area-switch');
+          if (menuBtn) break;
+          await new Promise(r => setTimeout(r, 100));
         }
 
         if (!menuBtn) return "MENU_NOT_FOUND";
@@ -43,66 +43,76 @@ export class ModeSwitcher {
 
         let alreadySelected = false;
         if ('${targetModelId}' === 'gemini-3.5-flash-lite') {
-            alreadySelected = combinedIndicator.includes('lite');
+          alreadySelected = combinedIndicator.includes('lite');
         } else if ('${targetModelId}' === 'gemini-3.7-flash') {
-            alreadySelected = combinedIndicator.includes('flash') && !combinedIndicator.includes('lite');
+          alreadySelected = combinedIndicator.includes('flash') && !combinedIndicator.includes('lite');
         } else if ('${targetModelId}' === 'gemini-3.1-pro') {
-            alreadySelected = combinedIndicator.includes('pro');
+          alreadySelected = combinedIndicator.includes('pro');
         }
 
         if (alreadySelected) {
-            return "SUCCESS";
+          return "SUCCESS";
         }
 
         const triggerPointerClick = (el) => {
-            el.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true, composed: true }));
-            el.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, composed: true }));
-            el.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, cancelable: true, composed: true }));
-            el.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true, composed: true }));
-            el.click();
+          el.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true, composed: true }));
+          el.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, composed: true }));
+          el.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, cancelable: true, composed: true }));
+          el.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true, composed: true }));
+          el.click();
         };
 
         triggerPointerClick(menuBtn);
 
         let optionBtn = null;
         for (let i = 0; i < 20; i++) {
-            optionBtn = document.querySelector('[data-test-id="${testId}"]');
-            if (!optionBtn && '${targetModelId}' === 'gemini-3.5-flash-lite') {
-                optionBtn = document.querySelector('[data-test-id="bard-mode-option-8c46e95b1a07cecc"], [data-test-id="bard-mode-option-cf41b0e0dd7d53e5"]');
-            }
-            if (optionBtn) break;
-            await new Promise(r => setTimeout(r, 100));
+          optionBtn = document.querySelector('[data-test-id="${testId}"]');
+          if (!optionBtn && '${targetModelId}' === 'gemini-3.5-flash-lite') {
+            optionBtn = document.querySelector('[data-test-id="bard-mode-option-8c46e95b1a07cecc"], [data-test-id="bard-mode-option-cf41b0e0dd7d53e5"]');
+          }
+          if (optionBtn) break;
+          await new Promise(r => setTimeout(r, 100));
         }
 
         if (!optionBtn) {
-            triggerPointerClick(menuBtn); // cleanup
-            return "OPTION_NOT_FOUND";
+          triggerPointerClick(menuBtn);
+          return "OPTION_NOT_FOUND";
         }
 
         triggerPointerClick(optionBtn);
 
-        // Verify button indicator reflects the target model
-        for (let i = 0; i < 25; i++) {
-            const updatedLabel = (menuBtn.getAttribute('aria-label') || '').toLowerCase();
-            const updatedText = (menuBtn.textContent || '').toLowerCase();
-            const updatedCombined = updatedLabel + ' ' + updatedText;
+        // Re-open the menu and verify the exact option's selection state rather than
+        // inferring the selected model from rendered button text.
+        await new Promise(r => setTimeout(r, 250));
+        triggerPointerClick(menuBtn);
+        await new Promise(r => setTimeout(r, 250));
 
-            let verified = false;
-            if ('${targetModelId}' === 'gemini-3.5-flash-lite') {
-                verified = updatedCombined.includes('lite');
-            } else if ('${targetModelId}' === 'gemini-3.7-flash') {
-                verified = updatedCombined.includes('flash') && !updatedCombined.includes('lite');
-            } else if ('${targetModelId}' === 'gemini-3.1-pro') {
-                verified = updatedCombined.includes('pro');
-            }
+        let result = "VERIFICATION_FAILED_NOT_SELECTED";
+        try {
+          const verifyBtn = document.querySelector('[data-test-id="${testId}"]') ||
+            ('${targetModelId}' === 'gemini-3.5-flash-lite'
+              ? document.querySelector('[data-test-id="bard-mode-option-8c46e95b1a07cecc"], [data-test-id="bard-mode-option-cf41b0e0dd7d53e5"]')
+              : null);
 
-            if (verified) {
-                return "SUCCESS";
+          if (!verifyBtn) {
+            result = "VERIFICATION_OPTION_VANISHED";
+          } else {
+            const isSelected =
+              verifyBtn.getAttribute('aria-selected') === 'true' ||
+              verifyBtn.getAttribute('aria-checked') === 'true' ||
+              verifyBtn.getAttribute('aria-current') === 'true' ||
+              verifyBtn.classList.contains('selected') ||
+              verifyBtn.classList.contains('is-selected');
+
+            if (isSelected) {
+              result = "SUCCESS";
             }
-            await new Promise(r => setTimeout(r, 100));
+          }
+        } finally {
+          triggerPointerClick(menuBtn);
         }
 
-        return "VERIFICATION_FAILED_NOT_SELECTED";
+        return result;
       })();
     `;
 
@@ -115,20 +125,18 @@ export class ModeSwitcher {
 
       const val = res?.result?.value ?? res?.value;
       if (res && val) {
-          if (val === "MENU_NOT_FOUND") {
-               throw new Error(`Model mode picker menu button not found in the Gemini UI.`);
-          }
-          if (val === "OPTION_NOT_FOUND") {
-               throw new Error(`Failed to locate model option for ${modelName} in the UI. Ensure your account has access to this model.`);
-          }
-          if (val !== "SUCCESS") {
-               throw new Error(`Model switch verification failed. Expected exact DOM state match for ${modelName} (${testId}), but UI indicates it is not selected. Debug state: ${val}`);
-          }
-          // Success!
+        if (val === "MENU_NOT_FOUND") {
+          throw new Error(`Model mode picker menu button not found in the Gemini UI.`);
+        }
+        if (val === "OPTION_NOT_FOUND") {
+          throw new Error(`Failed to locate model option for ${modelName} in the UI. Ensure your account has access to this model.`);
+        }
+        if (val !== "SUCCESS") {
+          throw new Error(`Model switch verification failed. Expected exact DOM state match for ${modelName} (${testId}), but UI indicates it is not selected. Debug state: ${val}`);
+        }
       } else {
-          throw new Error(`Unexpected failure executing mode switch script.`);
+        throw new Error(`Unexpected failure executing mode switch script.`);
       }
-
     } catch (e) {
       console.error('Failed to switch model mode via CDP', e);
       throw new Error(`Model switch failed for ${modelName}: ${(e as Error).message}`);
