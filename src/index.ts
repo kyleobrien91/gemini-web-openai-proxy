@@ -29,7 +29,10 @@ app.use(
 		_next: express.NextFunction,
 	) => {
 		console.error("Unhandled error:", err);
-		res.status(500).json({ error: { message: "Internal server error" } });
+		const statusCode = err.status || err.statusCode || 500;
+		res.status(statusCode).json({
+			error: { message: err.message || "Internal server error" },
+		});
 	},
 );
 

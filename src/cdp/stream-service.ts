@@ -193,6 +193,8 @@ export class StreamService {
           null, null, null, null, null, null, [0]
         ]);
 
+        const lang = (typeof window !== 'undefined' && window.navigator && window.navigator.language) ? window.navigator.language : 'en-US';
+
         const innerReq = [
           [
             input.prompt,
@@ -203,7 +205,7 @@ export class StreamService {
             null,
             0
           ],
-          ["en-GB"],
+          [lang],
           ["", "", "", null, null, null, null, null, null, ""],
           at
         ];
@@ -217,7 +219,7 @@ export class StreamService {
         const streamUrl = '/_/BardChatUi/data/assistant.lamda.BardFrontendService/StreamGenerate?bl=' +
           encodeURIComponent(bl || '') +
           '&f.sid=' + encodeURIComponent(fsid || '') +
-          '&hl=en-GB&_reqid=' + reqId + '&rt=c';
+          '&hl=' + encodeURIComponent(lang) + '&_reqid=' + reqId + '&rt=c';
 
         let sawProtocolFrame = false;
         let sawCandidateText = false;

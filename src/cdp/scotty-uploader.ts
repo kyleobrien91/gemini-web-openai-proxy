@@ -126,8 +126,8 @@ export class ScottyUploader {
 
         const responseText = await uploadResponse.text();
 
-        // Extract /contrib_service/ttl_1d/... reference
-        const blobMatch = responseText.match(/\\/contrib_service\\/ttl_1d\\/[^"\\s<>]+/);
+        // Extract /contrib_service/... reference
+        const blobMatch = responseText.match(/\\/contrib_service\\/[^"\\s<>]+/);
         if (!blobMatch) {
           throw new Error('Scotty finalize response did not contain a valid BlobStore reference: ' + responseText.slice(0, 200));
         }

@@ -378,7 +378,10 @@ export function isIpv6PrivateOrReserved(ip: string): boolean {
 }
 
 export function validateHostnameOrIp(hostname: string): void {
-	const normalizedHostname = hostname.toLowerCase().replace(/\.$/, "");
+	const normalizedHostname = hostname
+		.toLowerCase()
+		.replace(/^\[|\]$/g, "")
+		.replace(/\.$/, "");
 	if (
 		normalizedHostname === "localhost" ||
 		normalizedHostname === "metadata.google.internal" ||

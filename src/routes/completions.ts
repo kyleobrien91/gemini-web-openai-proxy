@@ -118,6 +118,13 @@ router.post("/v1/chat/completions", async (req, res) => {
 		const acquired = await routeMutex.lock(signal);
 		if (!acquired) {
 			cleanup();
+			if (!res.headersSent && !res.writableEnded) {
+				res.status(504).json({
+					error: {
+						message: "Request timed out waiting for browser worker mutex",
+					},
+				});
+			}
 			return; // Request was aborted while waiting in queue, exit cleanly without executing
 		}
 
