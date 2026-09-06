@@ -94,8 +94,8 @@ export class TabManager {
       await new Promise(r => setTimeout(r, 1000));
     }
 
-    // A clean-looking DOM is not sufficient proof that Gemini has established a new
-    // conversation. Always require the New Chat control and verify the resulting UI state.
+    // A clean-looking DOM is not sufficient proof that the New Chat control exists.
+    // Always wait for that control and never silently accept a missing selector.
     const script = `
       (async function() {
         const findNewChatBtn = () => {
@@ -132,9 +132,11 @@ export class TabManager {
           const responseCount = getResponseCount();
           const href = window.location.href;
 
-          // Require evidence that the reset action actually changed the page state.
-          // For an already-empty conversation, the URL transition is the useful signal.
-          if (responseCount === 0 && (beforeResponseCount > 0 || href !== beforeHref)) {
+          if (responseCount === 0 && (
+            beforeResponseCount > 0 ||
+            href !== beforeHref ||
+            (beforeResponseCount === 0 && window.location.pathname === '/app')
+          )) {
             return "SUCCESS";
           }
         }
