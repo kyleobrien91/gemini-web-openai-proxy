@@ -1,5 +1,5 @@
 import { CDPConnection } from './connection.js';
-import { getModel, resolveTargetModelId } from '../models/registry.js';
+import { getModel, resolveTargetModel, modelRegistry } from '../models/registry.js';
 
 export class ModeSwitcher {
   private cdp: CDPConnection;
@@ -9,66 +9,137 @@ export class ModeSwitcher {
   }
 
   async switchMode(modelName: string): Promise<void> {
-    const targetModelId = resolveTargetModelId(modelName);
-    if (!targetModelId) {
-      throw new Error(`Unknown model: ${modelName}. Supported models are 3.7-flash, 3.1-pro, 3.5-flash-lite, 2.5-pro, 2.5-flash.`);
+    const targetModel = resolveTargetModel(modelName);
+    if (!targetModel) {
+      throw new Error(`Unknown model: ${modelName}. Supported models are: ${Object.keys(modelRegistry).join(', ')}.`);
     }
 
-    const targetModel = getModel(targetModelId);
-    if (!targetModel || !targetModel.webDomTestId) {
-         throw new Error(`Configuration error: resolved target model ${targetModelId} does not have a webDomTestId.`);
+    if (targetModel.id === 'default') {
+      return; // Keep current UI selection
     }
 
-    const testId = targetModel.webDomTestId;
+    const testId = targetModel.webDomTestId || '';
+    const targetModelId = targetModel.id;
+    const targetExtendedThinking = targetModel.extendedThinking;
 
     const script = `
       (async function() {
-        const menuBtn = document.querySelector('button[data-test-id="bard-mode-menu-button"]');
+        function findMenuButton() {
+          return document.querySelector('button[data-test-id="bard-mode-menu-button"], button.input-area-switch, button[aria-label*="mode picker"], button[aria-label*="Mode picker"]');
+        }
+        let menuBtn = findMenuButton();
+        if (!menuBtn) {
+          const start = Date.now();
+          while (Date.now() - start < 8000) {
+            menuBtn = findMenuButton();
+            if (menuBtn) break;
+            await new Promise(r => setTimeout(r, 200));
+          }
+        }
         if (!menuBtn) return "MENU_NOT_FOUND";
 
-        menuBtn.click();
-        await new Promise(r => setTimeout(r, 500));
+        const currentText = menuBtn.innerText.toLowerCase();
+        const currentAria = (menuBtn.getAttribute('aria-label') || '').toLowerCase();
+        const currentHasExtended = currentText.includes('extended') || currentAria.includes('extended');
 
-        const optionBtn = document.querySelector('[data-test-id="${testId}"]');
-        if (!optionBtn) {
-            menuBtn.click(); // cleanup
-            return "OPTION_NOT_FOUND";
+        let currentBaseModel = 'unknown';
+        if (currentText.includes('lite') || currentAria.includes('lite')) currentBaseModel = 'gemini-flash-lite';
+        else if (currentText.includes('flash') || currentAria.includes('flash')) currentBaseModel = 'gemini-flash';
+        else if (currentText.includes('pro') || currentAria.includes('pro')) currentBaseModel = 'gemini-pro';
+
+        const target = ${JSON.stringify(targetModelId)};
+        let targetBaseModel = target;
+        if (target.includes('flash-lite')) targetBaseModel = 'gemini-flash-lite';
+        else if (target.includes('flash')) targetBaseModel = 'gemini-flash';
+        else if (target.includes('pro')) targetBaseModel = 'gemini-pro';
+
+        const desiredExtended = ${JSON.stringify(targetExtendedThinking)};
+
+        const modelMatches = (currentBaseModel === targetBaseModel);
+        const extendedMatches = (desiredExtended === undefined || currentHasExtended === desiredExtended);
+
+        if (modelMatches && extendedMatches) {
+          return "SUCCESS";
         }
 
-        optionBtn.click();
-
-        // Wait for the UI state to settle
-        await new Promise(r => setTimeout(r, 500));
-
-        // Re-open menu to inspect the selected state directly on the exact option element
+        // Open menu
         menuBtn.click();
-        await new Promise(r => setTimeout(r, 500));
+        const openStart = Date.now();
+        while (Date.now() - openStart < 3000) {
+          if (document.querySelector('gem-menu-item')) break;
+          await new Promise(r => setTimeout(r, 100));
+        }
 
-        let result = "VERIFICATION_FAILED_NOT_SELECTED";
-        try {
-            const verifyBtn = document.querySelector('[data-test-id="${testId}"]');
-            if (!verifyBtn) {
-                result = "VERIFICATION_OPTION_VANISHED";
-            } else {
-                // Strictly evaluate accessibility and active state classes.
-                // We do NOT use broad child queries like 'svg' or 'mat-icon' which can cause false positives.
-                const isSelected =
-                    verifyBtn.getAttribute('aria-selected') === 'true' ||
-                    verifyBtn.getAttribute('aria-checked') === 'true' ||
-                    verifyBtn.getAttribute('aria-current') === 'true' ||
-                    verifyBtn.classList.contains('selected') ||
-                    verifyBtn.classList.contains('is-selected');
+        function getItems() {
+          return Array.from(document.querySelectorAll('gem-menu-item, [role="menuitem"], [role="option"], button, a, [data-test-id*="bard-mode"]'));
+        }
 
-                if (isSelected) {
-                    result = "SUCCESS";
-                }
+        // 1. Switch base model if needed
+        if (!modelMatches) {
+          function findModelOption() {
+            if (${JSON.stringify(testId)}) {
+              const byTestId = document.querySelector('[data-test-id="${testId}"]');
+              if (byTestId) return byTestId;
             }
-        } finally {
-            // Guarantee menu cleanup on every path
+
+            const items = getItems();
+            for (const item of items) {
+              const text = (item.textContent || '').trim().toLowerCase();
+              const ariaLabel = (item.getAttribute('aria-label') || '').toLowerCase();
+              const combined = text + ' ' + ariaLabel;
+
+              if (targetBaseModel === 'gemini-flash-lite') {
+                if (combined.includes('flash lite') || combined.includes('flash-lite') || combined.includes('lite')) return item;
+              } else if (targetBaseModel === 'gemini-flash') {
+                if (combined.includes('flash') && !combined.includes('lite')) return item;
+              } else if (targetBaseModel === 'gemini-pro') {
+                if (combined.includes('pro') || combined.includes('advanced')) return item;
+              }
+            }
+            return null;
+          }
+
+          const modelOption = findModelOption();
+          if (!modelOption) {
             menuBtn.click();
+            return "OPTION_NOT_FOUND";
+          }
+
+          modelOption.click();
+          await new Promise(r => setTimeout(r, 600));
+
+          // Ensure menu is open for checking extended thinking
+          const isOpen = Boolean(document.querySelector('gem-menu-item'));
+          if (!isOpen) {
+            menuBtn.click();
+            await new Promise(r => setTimeout(r, 500));
+          }
         }
 
-        return result;
+        // 2. Adjust Extended Thinking if specified
+        if (desiredExtended !== undefined) {
+          const itemsNow = getItems();
+          const thinkingItem = itemsNow.find(el => el.innerText && el.innerText.includes('Extended thinking'));
+
+          if (thinkingItem) {
+            const isThinkingActive = thinkingItem.classList.contains('selected') || 
+                                     Boolean(thinkingItem.querySelector('mat-icon[data-mat-icon-name="check"], gem-icon[aria-label="Selected"]'));
+
+            if (isThinkingActive !== desiredExtended) {
+              thinkingItem.click();
+              await new Promise(r => setTimeout(r, 600));
+            }
+          }
+        }
+
+        // Ensure menu is closed
+        const menuStillOpen = Boolean(document.querySelector('gem-menu-item'));
+        if (menuStillOpen) {
+          menuBtn.click();
+          await new Promise(r => setTimeout(r, 400));
+        }
+
+        return "SUCCESS";
       })();
     `;
 
@@ -79,12 +150,13 @@ export class ModeSwitcher {
         returnByValue: true
       });
 
-      if (res && res.value) {
-          if (res.value === "MENU_NOT_FOUND" || res.value === "OPTION_NOT_FOUND") {
-               throw new Error(`Failed to locate model option for ${modelName} in the UI. Ensure your account has access to this model.`);
+      const resValue = res?.value ?? res?.result?.value;
+      if (resValue) {
+          if (resValue === "MENU_NOT_FOUND" || resValue === "OPTION_NOT_FOUND") {
+               throw new Error(`Failed to locate model option for ${modelName} in the UI (${resValue}). Ensure your account has access to this model.`);
           }
-          if (res.value !== "SUCCESS") {
-               throw new Error(`Model switch verification failed. Expected exact DOM state match for ${modelName} (${testId}), but UI indicates it is not selected. Debug state: ${res.value}`);
+          if (resValue !== "SUCCESS") {
+               throw new Error(`Model switch failed for ${modelName}. Debug state: ${resValue}`);
           }
           // Success!
       } else {
@@ -93,7 +165,8 @@ export class ModeSwitcher {
 
     } catch (e) {
       console.error('Failed to switch model mode via CDP', e);
-      throw new Error(`Model switch failed for ${modelName}: ${(e as Error).message}`);
+      throw e;
     }
   }
 }
+

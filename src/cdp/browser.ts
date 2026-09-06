@@ -2,23 +2,50 @@ import { CDPConnection } from './connection.js';
 import { TabManager } from './tab-manager.js';
 import { ModeSwitcher } from './mode-switcher.js';
 import { StreamListener, StreamListenerHandle } from './stream-listener.js';
+import { launchBrowser, waitForAuthentication } from './launcher.js';
+import { config } from '../config.js';
 
 export class BrowserWorker {
     public cdp: CDPConnection;
     public tabManager: TabManager;
     public modeSwitcher: ModeSwitcher;
     public streamListener: StreamListener;
+    private readyPromise: Promise<void> | null = null;
 
     constructor() {
         this.cdp = new CDPConnection();
         this.tabManager = new TabManager(this.cdp);
         this.modeSwitcher = new ModeSwitcher(this.cdp);
         this.streamListener = new StreamListener(this.cdp);
+
+        this.cdp.onDisconnect(() => {
+            this.readyPromise = null;
+        });
+    }
+
+    async ensureReady(): Promise<void> {
+        if (this.readyPromise) {
+            return this.readyPromise;
+        }
+
+        this.readyPromise = (async () => {
+            if (config.autoLaunchBrowser) {
+                await launchBrowser();
+            }
+            const target = await this.cdp.discoverTarget();
+            await this.cdp.connect(target.webSocketDebuggerUrl);
+            await waitForAuthentication(this.cdp);
+            await this.tabManager.ensureGeminiTab();
+        })().catch((err) => {
+            this.readyPromise = null;
+            throw err;
+        });
+
+        return this.readyPromise;
     }
 
     private async initialize(isRetry: boolean = false) {
-        const target = await this.cdp.discoverTarget();
-        await this.cdp.connect(target.webSocketDebuggerUrl);
+        await this.ensureReady();
         // Only reset the chat tab if this is a fresh request
         if (!isRetry) {
              await this.tabManager.ensureGeminiTab();
@@ -69,7 +96,7 @@ export class BrowserWorker {
                         }
 
                         attempts++;
-                        const submitBtn = document.querySelector('button[aria-label="Send prompt"], button.send-button-container');
+                        const submitBtn = document.querySelector('button[aria-label="Send message"], button[aria-label="Send prompt"], button.send-button-container, button[aria-label*="Send"]');
 
                         // Strict usability check: exists, visible, not disabled, no aria-disabled
                         const isVisible = submitBtn && submitBtn.offsetParent !== null && submitBtn.getBoundingClientRect().height > 0;

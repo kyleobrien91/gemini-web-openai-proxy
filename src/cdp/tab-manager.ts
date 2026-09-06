@@ -16,11 +16,60 @@ export class TabManager {
   }
 
   async resetChatSession(): Promise<void> {
-     // Navigation alone doesn't clear the Gemini UI state if it's an SPA routing.
-     // We will first try to navigate, then ensure the UI has clicked "New chat" to guarantee a fresh slate.
+     // Check if we are already on a fresh chat page (menuBtn and editor mounted, no chat history).
+     // If so, clicking "New chat" or doing nothing is virtually instantaneous and avoids a 10s page reload.
+     const quickCheck = await this.cdp.send('Runtime.evaluate', {
+         expression: `(() => {
+             const existingResponses = document.querySelectorAll('.model-response-text, model-response');
+             const menuBtn = document.querySelector('button[data-test-id="bard-mode-menu-button"], button.input-area-switch, button[aria-label*="mode picker"], button[aria-label*="Mode picker"]');
+             const inputArea = document.querySelector('.ql-editor, [contenteditable="true"], textarea');
+             const isAppUrl = window.location.href.includes('gemini.google.com/app');
+             return {
+                 isFresh: isAppUrl && existingResponses.length === 0 && Boolean(menuBtn) && Boolean(inputArea),
+                 hasResponses: existingResponses.length > 0,
+                 isAppUrl
+             };
+         })()`,
+         returnByValue: true
+     });
 
-     // 1. Enable lifecycle events BEFORE registering the listener or promise
-     // We await this natively so failures propagate cleanly to the caller without hanging.
+     const quickVal = quickCheck?.value ?? quickCheck?.result?.value;
+     if (quickVal?.isFresh) {
+         return; // Already on a clean, ready-to-use conversation!
+     }
+
+     // If on /app and just has old messages, click "New chat" without a hard reload
+     if (quickVal?.isAppUrl && quickVal?.hasResponses) {
+         const clickRes = await this.cdp.send('Runtime.evaluate', {
+             expression: `(async function() {
+                 const allCandidates = Array.from(document.querySelectorAll('a, button'));
+                 const newChatBtn = allCandidates.find(el => 
+                     (el.getAttribute('href') === '/app' && (el.innerText || '').includes('New chat')) ||
+                     ((el.getAttribute('aria-label') || '') === 'New chat' && el.getAttribute('href') === '/app')
+                 ) || document.querySelector('a[href="/app"], [data-test-id*="new-chat"]');
+
+                 if (newChatBtn) {
+                     newChatBtn.click();
+                     const start = Date.now();
+                     while (Date.now() - start < 5000) {
+                         const menuBtn = document.querySelector('button[data-test-id="bard-mode-menu-button"], button.input-area-switch, button[aria-label*="mode picker"], button[aria-label*="Mode picker"]');
+                         const remaining = document.querySelectorAll('.model-response-text, model-response');
+                         if (menuBtn && remaining.length === 0) return "SUCCESS";
+                         await new Promise(r => setTimeout(r, 200));
+                     }
+                 }
+                 return "NEEDS_FULL_NAV";
+             })()`,
+             awaitPromise: true,
+             returnByValue: true
+         });
+         const clickVal = clickRes?.value ?? clickRes?.result?.value;
+         if (clickVal === "SUCCESS") {
+             return;
+         }
+     }
+
+     // Fallback: Full navigation to https://gemini.google.com/app
      await this.cdp.send('Page.setLifecycleEventsEnabled', { enabled: true });
 
      await new Promise<void>(async (resolve, reject) => {
@@ -28,26 +77,19 @@ export class TabManager {
          let expectedLoaderId: string | null = null;
          let expectedFrameId: string | null = null;
          let hasNavigated = false;
-
          const pendingEvents: any[] = [];
 
          const lifecycleHandler = (event: any) => {
-             // If we haven't navigated yet, capture events in a buffer to prevent losing fast loads
              if (!hasNavigated) {
                  pendingEvents.push(event);
                  return;
              }
-
              processLifecycleEvent(event);
          };
 
          const processLifecycleEvent = (event: any) => {
-             // We only care about events matching the exact navigation we just initiated
-             // If loaderId is missing from the navigation response, it was a same-document navigation
-             // and we shouldn't enforce loaderId matching.
              if (expectedLoaderId && event.loaderId !== expectedLoaderId) return;
              if (expectedFrameId && event.frameId !== expectedFrameId) return;
-
              if (event.name === 'load') {
                  cleanup();
                  resolve();
@@ -61,72 +103,51 @@ export class TabManager {
 
          this.cdp.on('Page.lifecycleEvent', lifecycleHandler);
 
-         // Setup timeout
          timeoutId = setTimeout(() => {
              cleanup();
-             reject(new Error("Timeout waiting for Page.lifecycleEvent 'load' during resetChatSession"));
-         }, 10000);
+             resolve(); // Don't reject on load timeout if page is already responsive
+         }, 8000);
 
-         // 2. Initiate navigation
          try {
              const res = await this.cdp.send('Page.navigate', { url: 'https://gemini.google.com/app' });
-             if (res.errorText) {
-                 cleanup();
-                 return reject(new Error(`Page navigation failed: ${res.errorText}`));
-             }
-
-             // Same-document navigation (e.g., hash change) might not return a loaderId.
-             // In that case, navigation is effectively instantaneous and we don't need to wait for a full load event.
              if (!res.loaderId) {
                  cleanup();
                  return resolve();
              }
-
              expectedLoaderId = res.loaderId;
              expectedFrameId = res.frameId;
              hasNavigated = true;
-
-             // Process any events that arrived while we were waiting for Page.navigate to resolve
              for (const event of pendingEvents) {
                  processLifecycleEvent(event);
              }
          } catch (e) {
              cleanup();
-             return reject(e);
-         }
-     }).then(async () => {
-         // Give SPA a moment to render after load
-         await new Promise(r => setTimeout(r, 1000));
-
-         // Force a "New Chat" click and explicitly VERIFY it succeeded by checking that
-         // the chat history (model-response-text) is cleared from the DOM.
-         const script = `
-           (async function() {
-              const newChatBtn = document.querySelector('button[aria-label="New chat"], a[href="/app"]');
-              if (newChatBtn) {
-                  newChatBtn.click();
-                  // Wait for the UI to clear out previous messages
-                  await new Promise(r => setTimeout(r, 1000));
-
-                  // Verify that the chat is actually fresh
-                  const existingResponses = document.querySelectorAll('.model-response-text, model-response');
-                  if (existingResponses.length === 0) {
-                      return "SUCCESS";
-                  }
-                  return "VERIFICATION_FAILED_CHAT_NOT_EMPTY";
-              }
-              return "NEW_CHAT_BTN_NOT_FOUND";
-           })();
-         `;
-         const resetRes = await this.cdp.send('Runtime.evaluate', {
-             expression: script,
-             awaitPromise: true,
-             returnByValue: true
-         });
-
-         if (!resetRes || resetRes.value !== "SUCCESS") {
-             throw new Error(`Failed to initialize and verify a new conversation in Gemini UI: ${resetRes ? resetRes.value : 'unknown error'}`);
+             return resolve(); // proceed to verification
          }
      });
+
+     // Wait up to 25 seconds for UI to settle and mount elements
+     const verifyRes = await this.cdp.send('Runtime.evaluate', {
+         expression: `(async function() {
+             const start = Date.now();
+             while (Date.now() - start < 25000) {
+                 const menuBtn = document.querySelector('button[data-test-id="bard-mode-menu-button"], button.input-area-switch, button[aria-label*="mode picker"], button[aria-label*="Mode picker"]');
+                 const inputArea = document.querySelector('.ql-editor, [contenteditable="true"], textarea');
+                 const responses = document.querySelectorAll('.model-response-text, model-response');
+                 if (menuBtn && inputArea && responses.length === 0) {
+                     return "SUCCESS";
+                 }
+                 await new Promise(r => setTimeout(r, 300));
+             }
+             return "SETTLE_TIMEOUT";
+         })()`,
+         awaitPromise: true,
+         returnByValue: true
+     });
+
+     const verifyVal = verifyRes?.value ?? verifyRes?.result?.value;
+     if (verifyVal !== "SUCCESS") {
+         throw new Error(`Failed to reset chat session in Gemini UI: ${verifyVal}`);
+     }
   }
 }

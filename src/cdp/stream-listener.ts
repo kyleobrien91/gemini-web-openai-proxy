@@ -126,83 +126,7 @@ export class StreamListener {
           this.cdp.on('Runtime.bindingCalled', bindingHandler);
         });
 
-        // Inject the observer now, so we are guaranteed it is active BEFORE this setup resolves
-        const script = `
-            (function() {
-                // Initialize turn-specific state
-                window['__proxyTurn_${turnId}'] = {
-                    aborted: false,
-                    observer: null,
-                    checkDone: null,
-                    submitInterval: null
-                };
-                const state = window['__proxyTurn_${turnId}'];
-
-                const emitTurnPayload = (bindingName, payload) => {
-                    const data = JSON.stringify({ turnId: "${turnId}", payload: payload });
-                    window[bindingName](data);
-                };
-
-                const SELECTOR = '.model-response-text, model-response, .response-container-content, message-content';
-                const initialCount = document.querySelectorAll(SELECTOR).length;
-                let lastText = "";
-                let generatingElement = null;
-
-                state.observer = new MutationObserver(() => {
-                    if (state.aborted) return;
-
-                    if (!generatingElement) {
-                        const elements = document.querySelectorAll(SELECTOR);
-                        if (elements.length > initialCount) {
-                             // STRICT BINDING: Only attach to the exact next element that appeared
-                             generatingElement = elements[initialCount];
-                        }
-                    }
-
-                    if (generatingElement) {
-                        const currentText = generatingElement.innerText || generatingElement.textContent || "";
-                        if (currentText.length > lastText.length) {
-                            if (currentText.startsWith(lastText)) {
-                                 const diff = currentText.substring(lastText.length);
-                                 lastText = currentText;
-                                 emitTurnPayload('proxyEmitToken', diff);
-                            } else {
-                                 // DOM rerender shifted text completely. Fail the stream to prevent corruption.
-                                 state.observer.disconnect();
-                                 emitTurnPayload('proxyEmitError', "DOM rewrite detected; stream discontinuity. The UI modified already-emitted text prefix.");
-                            }
-                        }
-                    }
-                });
-                state.observer.observe(document.body, { childList: true, subtree: true, characterData: true });
-
-                let stableCount = 0;
-                state.checkDone = setInterval(() => {
-                    if (state.aborted) {
-                         clearInterval(state.checkDone);
-                         return;
-                    }
-
-                    if (!generatingElement) return;
-
-                    const sendBtn = document.querySelector('button[aria-label="Send prompt"], button.send-button-container');
-
-                    if (sendBtn && !sendBtn.disabled && sendBtn.getAttribute('aria-disabled') !== 'true' && lastText.length > 0) {
-                         stableCount++;
-                         if (stableCount >= 2) {
-                             clearInterval(state.checkDone);
-                             state.observer.disconnect();
-                             emitTurnPayload('proxyEmitComplete', "done");
-                         }
-                    } else {
-                         stableCount = 0;
-                    }
-                }, 500);
-
-                return "READY";
-            })();
-        `;
-
+        const script = this.buildBrowserStreamScript(turnId);
         const res = await this.cdp.send('Runtime.evaluate', { expression: script, returnByValue: true });
         if (res?.value !== "READY") {
              throw new Error("StreamListener failed to setup DOM observer.");
@@ -221,5 +145,285 @@ export class StreamListener {
         }
         throw e;
     }
+  }
+
+  private buildBrowserStreamScript(turnId: string): string {
+    return `
+      (function() {
+        const stateKey = '__proxyTurn_${turnId}';
+        window[stateKey] = {
+            aborted: false,
+            observer: null,
+            checkDone: null,
+            submitInterval: null
+        };
+        const state = window[stateKey];
+
+        const emitTurnPayload = (bindingName, payload) => {
+            const data = JSON.stringify({ turnId: "${turnId}", payload: payload });
+            window[bindingName](data);
+        };
+
+        const SELECTOR = 'model-response';
+        const initialCount = document.querySelectorAll(SELECTOR).length;
+        let generatingElement = null;
+        let lastCanonical = '';
+
+        function domToMarkdown(root) {
+            const lines = [];
+
+            function normaliseText(value) {
+                return value
+                    .replace(/\\r\\n/g, '\\n')
+                    .replace(/\\r/g, '\\n')
+                    .replace(/[ \\t]+\\n/g, '\\n')
+                    .replace(/\\n[ \\t]+/g, '\\n');
+            }
+
+            function textContent(node) {
+                return normaliseText(node.textContent || '');
+            }
+
+            function renderInline(node) {
+                if (node.nodeType === Node.TEXT_NODE) {
+                    return node.textContent || '';
+                }
+                if (node.nodeType !== Node.ELEMENT_NODE) {
+                    return '';
+                }
+                const el = node;
+                const tag = el.tagName.toLowerCase();
+                if (tag === 'br') {
+                    return '\\n';
+                }
+                if (tag === 'code' && el.parentElement?.tagName.toLowerCase() !== 'pre') {
+                    return '\`' + textContent(el) + '\`';
+                }
+                if (tag === 'strong' || tag === 'b') {
+                    return '**' + Array.from(el.childNodes).map(renderInline).join('') + '**';
+                }
+                if (tag === 'em' || tag === 'i') {
+                    return '*' + Array.from(el.childNodes).map(renderInline).join('') + '*';
+                }
+                if (tag === 'del' || tag === 's' || tag === 'strike') {
+                    return '~~' + Array.from(el.childNodes).map(renderInline).join('') + '~~';
+                }
+                if (tag === 'a') {
+                    const href = el.getAttribute('href');
+                    const text = Array.from(el.childNodes).map(renderInline).join('');
+                    return href ? ('[' + text + '](' + href + ')') : text;
+                }
+                return Array.from(el.childNodes).map(renderInline).join('');
+            }
+
+            function renderBlock(node, depth = 0) {
+                if (node.nodeType === Node.TEXT_NODE) {
+                    const value = (node.textContent || '')
+                        .replace(/\\r\\n/g, '\\n')
+                        .replace(/\\r/g, '\\n');
+                    if (value.trim().length > 0) {
+                        lines.push(value.trim());
+                    }
+                    return;
+                }
+                if (node.nodeType !== Node.ELEMENT_NODE) {
+                    return;
+                }
+                const el = node;
+                const tag = el.tagName.toLowerCase();
+                if (tag === 'pre') {
+                    const code = el.querySelector('code');
+                    const source = code ? (code.textContent || '') : (el.textContent || '');
+                    const className = code?.className || '';
+                    const languageMatch = className.match(
+                        /(?:language|lang)-([a-z0-9_+-]+)/i
+                    );
+                    lines.push(
+                        '\`\`\`' + (languageMatch ? languageMatch[1] : '')
+                    );
+                    lines.push(
+                        source
+                            .replace(/\\r\\n/g, '\\n')
+                            .replace(/\\r/g, '\\n')
+                            .replace(/\\n$/, '')
+                    );
+                    lines.push('\`\`\`');
+                    lines.push('');
+                    return;
+                }
+                if (/^h[1-6]$/.test(tag)) {
+                    const level = Number(tag.substring(1));
+                    lines.push('#'.repeat(level) + ' ' + renderInline(el).trim());
+                    lines.push('');
+                    return;
+                }
+                if (tag === 'blockquote') {
+                    const content = renderInline(el)
+                        .replace(/\\r\\n/g, '\\n')
+                        .replace(/\\r/g, '\\n');
+                    for (const line of content.split('\\n')) {
+                        lines.push('> ' + line);
+                    }
+                    lines.push('');
+                    return;
+                }
+                if (tag === 'ul' || tag === 'ol') {
+                    const items = Array.from(el.children)
+                        .filter(child => child.tagName.toLowerCase() === 'li');
+                    items.forEach((item, index) => {
+                        const prefix = tag === 'ol' ? ((index + 1) + '. ') : '- ';
+                        const itemText = renderInline(item).trim();
+                        lines.push(prefix + itemText);
+                    });
+                    lines.push('');
+                    return;
+                }
+                if (tag === 'li') {
+                    lines.push(renderInline(el).trim());
+                    return;
+                }
+                if (tag === 'hr') {
+                    lines.push('---');
+                    lines.push('');
+                    return;
+                }
+                if (tag === 'p') {
+                    const content = renderInline(el)
+                        .replace(/\\r\\n/g, '\\n')
+                        .replace(/\\r/g, '\\n')
+                        .replace(/[ \\t]+\\n/g, '\\n')
+                        .replace(/\\n{3,}/g, '\\n\\n')
+                        .trim();
+                    if (content.length > 0) {
+                        lines.push(content);
+                        lines.push('');
+                    }
+                    return;
+                }
+
+                // Recursively process children of container elements (div, message-content, section, etc.)
+                for (const child of Array.from(el.childNodes)) {
+                    renderBlock(child, depth + 1);
+                }
+            }
+
+            const contentRoot = root.querySelector('message-content') || 
+                                root.querySelector('.model-response-text') || 
+                                root.querySelector('.response-content') || 
+                                root;
+
+            renderBlock(contentRoot);
+            let result = lines.join('\\n');
+            result = result
+                .replace(/\\r\\n/g, '\\n')
+                .replace(/\\r/g, '\\n')
+                .replace(/[ \\t]+\\n/g, '\\n')
+                .replace(/\\n{3,}/g, '\\n\\n')
+                .replace(/[ \\t]+$/gm, '')
+                .trim();
+            return result;
+        }
+
+        function emitCanonicalDelta(currentCanonical) {
+            if (!currentCanonical) return;
+            if (!lastCanonical) {
+                lastCanonical = currentCanonical;
+                emitTurnPayload('proxyEmitToken', currentCanonical);
+                return;
+            }
+            if (currentCanonical === lastCanonical) return;
+
+            if (currentCanonical.startsWith(lastCanonical)) {
+                const delta = currentCanonical.substring(lastCanonical.length);
+                lastCanonical = currentCanonical;
+                if (delta.length > 0) {
+                    emitTurnPayload('proxyEmitToken', delta);
+                }
+                return;
+            }
+
+            // Reconciliation path: find common prefix
+            let commonPrefix = 0;
+            const max = Math.min(lastCanonical.length, currentCanonical.length);
+            while (
+                commonPrefix < max &&
+                lastCanonical.charCodeAt(commonPrefix) === currentCanonical.charCodeAt(commonPrefix)
+            ) {
+                commonPrefix++;
+            }
+
+            const rewriteDistance = lastCanonical.length - commonPrefix;
+            if (rewriteDistance <= 256) {
+                const delta = currentCanonical.substring(commonPrefix);
+                lastCanonical = currentCanonical;
+                if (delta.length > 0) {
+                    emitTurnPayload('proxyEmitToken', delta);
+                }
+            }
+        }
+
+        function locateGeneratingElement() {
+            if (generatingElement) return;
+            const elements = document.querySelectorAll(SELECTOR);
+            if (elements.length > initialCount) {
+                generatingElement = elements[initialCount];
+            }
+        }
+
+        function sampleResponse() {
+            if (state.aborted) return;
+            locateGeneratingElement();
+            if (!generatingElement) return;
+            const canonical = domToMarkdown(generatingElement);
+            emitCanonicalDelta(canonical);
+        }
+
+        state.observer = new MutationObserver(() => {
+            if (state.aborted) return;
+            requestAnimationFrame(() => {
+                sampleResponse();
+            });
+        });
+        state.observer.observe(document.body, { childList: true, subtree: true, characterData: true });
+
+        let stableCount = 0;
+        let lastObservedLength = 0;
+
+        state.checkDone = setInterval(() => {
+            if (state.aborted) {
+                clearInterval(state.checkDone);
+                return;
+            }
+
+            sampleResponse();
+
+            const stopBtn = document.querySelector('button[aria-label*="Stop"], button[aria-label*="Cancel"]');
+            const dictateBtn = document.querySelector('button[aria-label*="Dictate"], button[aria-label*="Microphone"]');
+            const sendBtn = document.querySelector('button[aria-label*="Send"]');
+            const actionBtns = document.querySelector('button[aria-label="Good response"], button[aria-label="Copy"], button[aria-label="Redo"]');
+
+            const currentLength = lastCanonical.length;
+            if (currentLength === lastObservedLength && currentLength > 0) {
+                stableCount++;
+            } else {
+                stableCount = 0;
+            }
+            lastObservedLength = currentLength;
+
+            const isDone = !stopBtn && (Boolean(dictateBtn) || Boolean(sendBtn) || Boolean(actionBtns)) && currentLength > 0;
+
+            if (isDone && stableCount >= 2) {
+                clearInterval(state.checkDone);
+                if (state.observer) {
+                    state.observer.disconnect();
+                }
+                sampleResponse();
+                emitTurnPayload('proxyEmitComplete', "done");
+            }
+        }, 500);
+
+        return "READY";
+      })();
+    `;
   }
 }

@@ -72,7 +72,11 @@ export class CDPConnection {
           if (msg.error) {
             reject(msg.error);
           } else {
-            resolve(msg.result);
+            const result = msg.result;
+            if (result && typeof result === 'object' && result.result && 'value' in result.result && !('value' in result)) {
+              result.value = result.result.value;
+            }
+            resolve(result);
           }
         } else if (msg.method) {
           const listeners = this.eventListeners.get(msg.method);

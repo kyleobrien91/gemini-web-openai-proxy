@@ -1,10 +1,11 @@
 import { Router } from 'express';
-import { modelRegistry } from '../models/registry.js';
+import { modelRegistry, resolveTargetModel } from '../models/registry.js';
 
 const router = Router();
 
 router.get('/v1/models', (req, res) => {
   const modelsList = Object.values(modelRegistry).map(model => {
+      const resolved = resolveTargetModel(model.id);
       const data: any = {
         id: model.id,
         object: "model",
@@ -13,13 +14,15 @@ router.get('/v1/models', (req, res) => {
         permission: [],
         root: model.id,
         parent: null,
-        metadata: {}
+        metadata: {
+          web_label: model.name,
+          extended_thinking: resolved?.extendedThinking ?? false
+        }
       };
 
       if (model.aliasFor) {
           data.metadata.alias_for = model.aliasFor;
-      } else {
-          data.metadata.web_label = model.name;
+      } else if (model.webDomTestId) {
           data.metadata.web_dom_testid = model.webDomTestId;
       }
       return data;
