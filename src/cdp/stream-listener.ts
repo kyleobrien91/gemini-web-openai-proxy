@@ -1,4 +1,5 @@
 import type { CDPConnection } from "./connection.js";
+import type { RequestTrace } from "../utils/request-trace.js";
 
 export interface StreamListenerHandle {
 	waitForCompletion: () => Promise<void>;
@@ -33,6 +34,7 @@ export class StreamListener {
 		turnId: string,
 		onToken: (token: string) => void,
 		signal?: AbortSignal,
+		trace?: RequestTrace,
 	): Promise<StreamListenerHandle> {
 		let bindingHandler: ((event: any) => void) | undefined;
 		let onDisconnect: (() => void) | undefined;
@@ -133,6 +135,7 @@ export class StreamListener {
 						}
 
 						if (event.name === "proxyEmitToken") {
+							trace?.recordToken();
 							onToken(parsedPayload.payload);
 						} else if (event.name === "proxyEmitError") {
 							rollback().then(() => reject(new Error(parsedPayload.payload)));
@@ -168,7 +171,7 @@ export class StreamListener {
 	}
 
 	private buildBrowserStreamScript(turnId: string): string {
-    return `
+		return `
       (function() {
         const stateKey = '__proxyTurn_${turnId}';
         window[stateKey] = {

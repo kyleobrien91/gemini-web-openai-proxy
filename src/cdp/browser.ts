@@ -3,6 +3,7 @@ import type { UploadableFile } from "../prompt/file-extractor.js";
 import { CDPConnection } from "./connection.js";
 import { launchBrowser, waitForAuthentication } from "./launcher.js";
 import { ModeSwitcher } from "./mode-switcher.js";
+import type { RequestTrace } from "../utils/request-trace.js";
 import { ScottyUploader } from "./scotty-uploader.js";
 import {
 	StreamListener,
@@ -35,9 +36,10 @@ export class BrowserWorker {
 		});
 	}
 
-	async ensureReady(): Promise<void> {
+	async ensureReady(trace?: RequestTrace): Promise<void> {
+		trace?.start("browser.ensureReady");
 		if (this.readyPromise) {
-			return this.readyPromise;
+			return this.readyPromise.then(() => trace?.end("browser.ensureReady"));
 		}
 
 		this.readyPromise = (async () => {
@@ -56,14 +58,15 @@ export class BrowserWorker {
 		return this.readyPromise;
 	}
 
-	private async initialize(isRetry: boolean = false) {
-		await this.ensureReady();
+	private async initialize(isRetry: boolean = false, trace?: RequestTrace) {
+		await this.ensureReady(trace);
 		// Only reset the chat tab if this is a fresh request
 		if (!isRetry) {
+			trace?.start("tab.ensureGemini");
 			await this.tabManager.ensureGeminiTab();
+			trace?.end("tab.ensureGemini");
 		}
 	}
-
 
 	async submitPrompt(
 		turnId: string,
@@ -73,15 +76,18 @@ export class BrowserWorker {
 		signal?: AbortSignal,
 		isRetry: boolean = false,
 		attachments?: UploadableFile[],
+		trace?: RequestTrace,
 	): Promise<TurnStreamHandle | null> {
 		if (signal?.aborted) return null;
 
 		// Initialization happens inside the route lock. We pass isRetry to prevent chat reset.
-		await this.initialize(isRetry);
+		await this.initialize(isRetry, trace);
 		if (signal?.aborted) return null;
 
 		// 1. Switch mode
+		trace?.start("model.switch");
 		await this.modeSwitcher.switchMode(model);
+		trace?.end("model.switch");
 		if (signal?.aborted) return null;
 
 		// If multimodal attachments are provided, use direct Scotty upload + StreamGenerate transport
@@ -102,11 +108,14 @@ export class BrowserWorker {
 		}
 
 		// 2. Setup listener BEFORE submitting, guaranteeing completion of setup
+		trace?.start("stream.setup");
 		const streamHandle = await this.streamListener.setup(
 			turnId,
 			onToken,
 			signal,
+			trace,
 		);
+		trace?.end("stream.setup");
 		if (signal?.aborted) {
 			await streamHandle.cleanup();
 			return null;
@@ -124,6 +133,7 @@ export class BrowserWorker {
                 const state = window['__proxyTurn_${turnId}'];
                 if (!state || state.aborted) return "ABORTED";
 
+                const tStart = performance.now();
                 const editor = document.querySelector('.ql-editor.textarea[contenteditable="true"], .ql-editor[contenteditable="true"], .ql-editor');
                 if (!editor) return "EDITOR_NOT_FOUND";
 
@@ -211,6 +221,7 @@ export class BrowserWorker {
                     return "EDITOR_INSERTION_VERIFICATION_FAILED";
                 }
 
+                const tInserted = performance.now();
                 // Wait for the send button to become genuinely usable
                 return new Promise((resolve) => {
                     let attempts = 0;
@@ -232,6 +243,7 @@ export class BrowserWorker {
                         const isEnabled = submitBtn && !submitBtn.disabled && submitBtn.getAttribute('aria-disabled') !== 'true' && !submitBtn.closest('[aria-disabled="true"]');
 
                         if (isVisible && isEnabled) {
+                            const tSubmitReady = performance.now();
                             clearInterval(state.submitInterval);
                             // Final safety check immediately before click
                             if (state.aborted || !window.location.href.includes('gemini.google.com')) {
@@ -239,7 +251,12 @@ export class BrowserWorker {
                                 return;
                             }
                             submitBtn.click();
-                            resolve("SUCCESS");
+                            resolve(JSON.stringify({
+                                status: "SUCCESS",
+                                insertTime: tInserted - tStart,
+                                waitTime: tSubmitReady - tInserted,
+                                clickTime: performance.now() - tSubmitReady
+                            }));
                         } else if (attempts >= maxAttempts) {
                             clearInterval(state.submitInterval);
                             resolve("SUBMIT_BTN_NOT_USABLE_OR_TIMEOUT");
@@ -263,7 +280,19 @@ export class BrowserWorker {
 			throw e;
 		}
 
-		const submitVal = submitRes?.result?.value ?? submitRes?.value;
+		const submitValRaw = submitRes?.result?.value ?? submitRes?.value;
+		let submitVal = submitValRaw;
+
+		let browserMetrics: any = null;
+		if (typeof submitValRaw === "string" && submitValRaw.startsWith("{")) {
+			try {
+				const parsed = JSON.parse(submitValRaw);
+				submitVal = parsed.status;
+				browserMetrics = parsed;
+			} catch (e) {
+				// Ignore
+			}
+		}
 
 		if (submitVal === "ABORTED") {
 			await streamHandle.cleanup();
@@ -273,6 +302,12 @@ export class BrowserWorker {
 		if (submitVal !== "SUCCESS") {
 			await streamHandle.cleanup();
 			throw new Error(`Failed to submit prompt: ${submitVal}`);
+		}
+
+		if (browserMetrics && trace) {
+			trace.recordDuration("prompt.insertion", browserMetrics.insertTime);
+			trace.recordDuration("submit.wait", browserMetrics.waitTime);
+			trace.recordDuration("submit.click", browserMetrics.clickTime);
 		}
 
 		// 4. Return handle so caller can await completion
