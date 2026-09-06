@@ -1,36 +1,44 @@
-import { CDPConnection } from './connection.js';
-import { getModel, resolveTargetModelId } from '../models/registry.js';
+import { getModel, resolveTargetModelId } from "../models/registry.js";
+import type { CDPConnection } from "./connection.js";
 
 export class ModeSwitcher {
-  private cdp: CDPConnection;
+	private cdp: CDPConnection;
 
-  constructor(cdp: CDPConnection) {
-    this.cdp = cdp;
-  }
+	constructor(cdp: CDPConnection) {
+		this.cdp = cdp;
+	}
 
-  async switchMode(modelName: string): Promise<void> {
-    const targetModelId = resolveTargetModelId(modelName);
-    if (!targetModelId) {
-      throw new Error(`Unknown model: ${modelName}. Supported models are 3.7-flash, 3.1-pro, 3.5-flash-lite, 2.5-pro, 2.5-flash.`);
-    }
+	async switchMode(modelName: string): Promise<void> {
+		const targetModelId = resolveTargetModelId(modelName);
+		if (!targetModelId) {
+			throw new Error(
+				`Unknown model: ${modelName}. Supported models are 3.7-flash, 3.1-pro, 3.5-flash-lite, 2.5-pro, 2.5-flash.`,
+			);
+		}
 
-    const targetModel = getModel(targetModelId);
-    if (!targetModel || !targetModel.webDomTestId) {
-         throw new Error(`Configuration error: resolved target model ${targetModelId} does not have a webDomTestId.`);
-    }
+		const targetModel = getModel(targetModelId);
+		if (!targetModel?.webDomTestId) {
+			throw new Error(
+				`Configuration error: resolved target model ${targetModelId} does not have a webDomTestId.`,
+			);
+		}
 
-    const testId = targetModel.webDomTestId;
+		const testId = targetModel.webDomTestId;
 
-    const script = `
+		const script = `
       (async function() {
-        const editor = document.querySelector('.ql-editor');
-        if (editor) {
+        let menuBtn = null;
+        for (let i = 0; i < 150; i++) {
+          const editor = document.querySelector('.ql-editor');
+          if (editor && i % 5 === 0) {
             editor.focus();
             editor.dispatchEvent(new Event('focus', { bubbles: true }));
+          }
+          menuBtn = document.querySelector('button[data-test-id="bard-mode-menu-button"], button[aria-label*="mode picker"], .input-area-switch');
+          if (menuBtn) break;
+          await new Promise(r => setTimeout(r, 100));
         }
-        await new Promise(r => setTimeout(r, 200));
 
-        const menuBtn = document.querySelector('button[data-test-id="bard-mode-menu-button"], button[aria-label*="mode picker"], .input-area-switch');
         if (!menuBtn) return "MENU_NOT_FOUND";
 
         const currentLabel = (menuBtn.getAttribute('aria-label') || '').toLowerCase();
@@ -39,86 +47,111 @@ export class ModeSwitcher {
 
         let alreadySelected = false;
         if ('${targetModelId}' === 'gemini-3.5-flash-lite') {
-            alreadySelected = combinedIndicator.includes('lite');
+          alreadySelected = combinedIndicator.includes('lite');
         } else if ('${targetModelId}' === 'gemini-3.7-flash') {
-            alreadySelected = combinedIndicator.includes('flash') && !combinedIndicator.includes('lite');
+          alreadySelected = combinedIndicator.includes('flash') && !combinedIndicator.includes('lite');
         } else if ('${targetModelId}' === 'gemini-3.1-pro') {
-            alreadySelected = combinedIndicator.includes('pro');
+          alreadySelected = combinedIndicator.includes('pro');
         }
 
         if (alreadySelected) {
-            return "SUCCESS";
+          return "SUCCESS";
         }
 
-        menuBtn.click();
-        await new Promise(r => setTimeout(r, 500));
+        const triggerPointerClick = (el) => {
+          el.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true, composed: true }));
+          el.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, composed: true }));
+          el.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, cancelable: true, composed: true }));
+          el.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true, composed: true }));
+          el.click();
+        };
 
-        const optionBtn = document.querySelector('[data-test-id="${testId}"]');
+        triggerPointerClick(menuBtn);
+
+        let optionBtn = null;
+        for (let i = 0; i < 20; i++) {
+          optionBtn = document.querySelector('[data-test-id="${testId}"]');
+          if (!optionBtn && '${targetModelId}' === 'gemini-3.5-flash-lite') {
+            optionBtn = document.querySelector('[data-test-id="bard-mode-option-8c46e95b1a07cecc"], [data-test-id="bard-mode-option-cf41b0e0dd7d53e5"]');
+          }
+          if (optionBtn) break;
+          await new Promise(r => setTimeout(r, 100));
+        }
+
         if (!optionBtn) {
-            menuBtn.click(); // cleanup
-            return "OPTION_NOT_FOUND";
+          triggerPointerClick(menuBtn);
+          return "OPTION_NOT_FOUND";
         }
 
-        optionBtn.click();
+        triggerPointerClick(optionBtn);
 
-        // Wait for the UI state to settle
-        await new Promise(r => setTimeout(r, 500));
-
-        // Re-open menu to inspect the selected state directly on the exact option element
-        menuBtn.click();
-        await new Promise(r => setTimeout(r, 500));
+        // Re-open the menu and verify the exact option's selection state rather than
+        // inferring the selected model from rendered button text.
+        await new Promise(r => setTimeout(r, 250));
+        triggerPointerClick(menuBtn);
+        await new Promise(r => setTimeout(r, 250));
 
         let result = "VERIFICATION_FAILED_NOT_SELECTED";
         try {
-            const verifyBtn = document.querySelector('[data-test-id="${testId}"]');
-            if (!verifyBtn) {
-                result = "VERIFICATION_OPTION_VANISHED";
-            } else {
-                // Strictly evaluate accessibility and active state classes.
-                // We do NOT use broad child queries like 'svg' or 'mat-icon' which can cause false positives.
-                const isSelected =
-                    verifyBtn.getAttribute('aria-selected') === 'true' ||
-                    verifyBtn.getAttribute('aria-checked') === 'true' ||
-                    verifyBtn.getAttribute('aria-current') === 'true' ||
-                    verifyBtn.classList.contains('selected') ||
-                    verifyBtn.classList.contains('is-selected');
+          const verifyBtn = document.querySelector('[data-test-id="${testId}"]') ||
+            ('${targetModelId}' === 'gemini-3.5-flash-lite'
+              ? document.querySelector('[data-test-id="bard-mode-option-8c46e95b1a07cecc"], [data-test-id="bard-mode-option-cf41b0e0dd7d53e5"]')
+              : null);
 
-                if (isSelected) {
-                    result = "SUCCESS";
-                }
+          if (!verifyBtn) {
+            result = "VERIFICATION_OPTION_VANISHED";
+          } else {
+            const isSelected =
+              verifyBtn.getAttribute('aria-selected') === 'true' ||
+              verifyBtn.getAttribute('aria-checked') === 'true' ||
+              verifyBtn.getAttribute('aria-current') === 'true' ||
+              verifyBtn.classList.contains('selected') ||
+              verifyBtn.classList.contains('is-selected');
+
+            if (isSelected) {
+              result = "SUCCESS";
             }
+          }
         } finally {
-            // Guarantee menu cleanup on every path
-            menuBtn.click();
+          triggerPointerClick(menuBtn);
         }
 
         return result;
       })();
     `;
 
-    try {
-      const res = await this.cdp.send('Runtime.evaluate', {
-        expression: script,
-        awaitPromise: true,
-        returnByValue: true
-      });
+		try {
+			const res = await this.cdp.send("Runtime.evaluate", {
+				expression: script,
+				awaitPromise: true,
+				returnByValue: true,
+			});
 
-      const val = res?.result?.value ?? res?.value;
-      if (res && val) {
-          if (val === "MENU_NOT_FOUND" || val === "OPTION_NOT_FOUND") {
-               throw new Error(`Failed to locate model option for ${modelName} in the UI. Ensure your account has access to this model.`);
-          }
-          if (val !== "SUCCESS") {
-               throw new Error(`Model switch verification failed. Expected exact DOM state match for ${modelName} (${testId}), but UI indicates it is not selected. Debug state: ${val}`);
-          }
-          // Success!
-      } else {
-          throw new Error(`Unexpected failure executing mode switch script.`);
-      }
-
-    } catch (e) {
-      console.error('Failed to switch model mode via CDP', e);
-      throw new Error(`Model switch failed for ${modelName}: ${(e as Error).message}`);
-    }
-  }
+			const val = res?.result?.value ?? res?.value;
+			if (res && val) {
+				if (val === "MENU_NOT_FOUND") {
+					throw new Error(
+						`Model mode picker menu button not found in the Gemini UI.`,
+					);
+				}
+				if (val === "OPTION_NOT_FOUND") {
+					throw new Error(
+						`Failed to locate model option for ${modelName} in the UI. Ensure your account has access to this model.`,
+					);
+				}
+				if (val !== "SUCCESS") {
+					throw new Error(
+						`Model switch verification failed. Expected exact DOM state match for ${modelName} (${testId}), but UI indicates it is not selected. Debug state: ${val}`,
+					);
+				}
+			} else {
+				throw new Error(`Unexpected failure executing mode switch script.`);
+			}
+		} catch (e) {
+			console.error("Failed to switch model mode via CDP", e);
+			throw new Error(
+				`Model switch failed for ${modelName}: ${(e as Error).message}`,
+			);
+		}
+	}
 }

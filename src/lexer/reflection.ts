@@ -1,5 +1,5 @@
 export function generateReflectionPrompt(errorReason: string): string {
-    return `[SYSTEM CORRECTION]:
+	return `[SYSTEM CORRECTION]:
 Your previous response violated the mandatory tool calling format.
 Reason: ${errorReason}
 

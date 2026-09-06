@@ -1,49 +1,57 @@
-import { CDPConnection } from './connection.js';
+import type { CDPConnection } from "./connection.js";
 
 export interface StreamListenerHandle {
-    waitForCompletion: () => Promise<void>;
-    cleanup: () => Promise<void>;
+	waitForCompletion: () => Promise<void>;
+	cleanup: () => Promise<void>;
 }
 
 export class StreamListener {
-  private cdp: CDPConnection;
+	private cdp: CDPConnection;
 
-  constructor(cdp: CDPConnection) {
-    this.cdp = cdp;
-  }
+	constructor(cdp: CDPConnection) {
+		this.cdp = cdp;
+	}
 
-  private async safeAddBinding(name: string) {
-      try {
-          await this.cdp.send('Runtime.addBinding', { name });
-      } catch (e: any) {
-          if (e.message && (e.message.includes('Binding already exists') || e.message.includes('Binding with that name already exists'))) {
-              // Safe to ignore
-          } else {
-              throw e; // Rethrow actual CDP failures
-          }
-      }
-  }
+	private async safeAddBinding(name: string) {
+		try {
+			await this.cdp.send("Runtime.addBinding", { name });
+		} catch (e: any) {
+			if (
+				e.message &&
+				(e.message.includes("Binding already exists") ||
+					e.message.includes("Binding with that name already exists"))
+			) {
+				// Safe to ignore
+			} else {
+				throw e; // Rethrow actual CDP failures
+			}
+		}
+	}
 
-  // Setup returns a handle. Setup must be awaited before submitting the prompt.
-  async setup(turnId: string, onToken: (token: string) => void, signal?: AbortSignal): Promise<StreamListenerHandle> {
-    let bindingHandler: ((event: any) => void) | undefined;
-    let onDisconnect: (() => void) | undefined;
-    let onAbort: (() => void) | undefined;
+	// Setup returns a handle. Setup must be awaited before submitting the prompt.
+	async setup(
+		turnId: string,
+		onToken: (token: string) => void,
+		signal?: AbortSignal,
+	): Promise<StreamListenerHandle> {
+		let bindingHandler: ((event: any) => void) | undefined;
+		let onDisconnect: (() => void) | undefined;
+		let onAbort: (() => void) | undefined;
 
-    // Transactional cleanup tracking
-    let isSetup = false;
-    let isCleanedUp = false;
+		// Transactional cleanup tracking
+		let isSetup = false;
+		let isCleanedUp = false;
 
-    const rollback = async () => {
-        if (isCleanedUp) return;
-        isCleanedUp = true;
+		const rollback = async () => {
+			if (isCleanedUp) return;
+			isCleanedUp = true;
 
-        if (bindingHandler) this.cdp.off('Runtime.bindingCalled', bindingHandler);
-        if (onDisconnect) this.cdp.offDisconnect(onDisconnect);
-        if (signal && onAbort) signal.removeEventListener('abort', onAbort);
+			if (bindingHandler) this.cdp.off("Runtime.bindingCalled", bindingHandler);
+			if (onDisconnect) this.cdp.offDisconnect(onDisconnect);
+			if (signal && onAbort) signal.removeEventListener("abort", onAbort);
 
-        // Scope all browser-side variables to the specific turnId
-        const cleanupScript = `
+			// Scope all browser-side variables to the specific turnId
+			const cleanupScript = `
            const state = window['__proxyTurn_${turnId}'];
            if (state) {
                state.aborted = true;
@@ -63,74 +71,82 @@ export class StreamListener {
            }
         `;
 
-        try {
-            // Await cleanup fully to ensure DOM state is clear before returning lock
-            await this.cdp.send('Runtime.evaluate', { expression: cleanupScript, awaitPromise: true });
-        } catch (e) {
-            // If the connection is already dead, evaluate will fail.
-            // When this happens, we invalidate the target ID so the next request is forced to reconnect
-            // and perform a full page reset, tearing down any orphaned state left in the browser.
-            this.cdp.targetId = null;
-        }
-    };
+			try {
+				// Await cleanup fully to ensure DOM state is clear before returning lock
+				await this.cdp.send("Runtime.evaluate", {
+					expression: cleanupScript,
+					awaitPromise: true,
+				});
+			} catch (_e) {
+				// If the connection is already dead, evaluate will fail.
+				// When this happens, we invalidate the target ID so the next request is forced to reconnect
+				// and perform a full page reset, tearing down any orphaned state left in the browser.
+				this.cdp.targetId = null;
+			}
+		};
 
-    try {
-        await this.safeAddBinding('proxyEmitToken');
-        await this.safeAddBinding('proxyEmitComplete');
-        await this.safeAddBinding('proxyEmitError');
+		try {
+			await this.safeAddBinding("proxyEmitToken");
+			await this.safeAddBinding("proxyEmitComplete");
+			await this.safeAddBinding("proxyEmitError");
 
-        const completionPromise = new Promise<void>((resolve, reject) => {
+			const completionPromise = new Promise<void>((resolve, reject) => {
+				onAbort = () => {
+					rollback().then(() => reject(new Error("Request cancelled")));
+				};
 
-          onAbort = () => {
-              rollback().then(() => reject(new Error("Request cancelled")));
-          };
+				if (signal) {
+					if (signal.aborted) {
+						return reject(new Error("Request already cancelled"));
+					}
+					signal.addEventListener("abort", onAbort);
+				}
 
-          if (signal) {
-              if (signal.aborted) {
-                  return reject(new Error("Request already cancelled"));
-              }
-              signal.addEventListener('abort', onAbort);
-          }
+				onDisconnect = () => {
+					rollback().then(() =>
+						reject(new Error("CDP WebSocket disconnected during stream")),
+					);
+				};
+				this.cdp.onDisconnect(onDisconnect);
 
-          onDisconnect = () => {
-             rollback().then(() => reject(new Error("CDP WebSocket disconnected during stream")));
-          };
-          this.cdp.onDisconnect(onDisconnect);
+				bindingHandler = (event: any) => {
+					if (
+						event.name === "proxyEmitToken" ||
+						event.name === "proxyEmitError" ||
+						event.name === "proxyEmitComplete"
+					) {
+						let parsedPayload: any;
+						try {
+							parsedPayload = JSON.parse(event.payload);
+						} catch (_e) {
+							// Malformed payload detected.
+							// We simply ignore unparseable payloads because they could be emitted
+							// by stale or completely unrelated browser execution contexts that somehow
+							// called the global proxy binding. We only reject/act if we can
+							// authoritatively verify the payload belongs to the *current* turn.
+							return;
+						}
 
-          bindingHandler = (event: any) => {
-            if (event.name === 'proxyEmitToken' || event.name === 'proxyEmitError' || event.name === 'proxyEmitComplete') {
-                let parsedPayload: any;
-                try {
-                    parsedPayload = JSON.parse(event.payload);
-                } catch (e) {
-                    // Malformed payload detected.
-                    // We simply ignore unparseable payloads because they could be emitted
-                    // by stale or completely unrelated browser execution contexts that somehow
-                    // called the global proxy binding. We only reject/act if we can
-                    // authoritatively verify the payload belongs to the *current* turn.
-                    return;
-                }
+						// Discard payloads belonging to stale or future turns
+						if (parsedPayload.turnId !== turnId) {
+							return;
+						}
 
-                // Discard payloads belonging to stale or future turns
-                if (parsedPayload.turnId !== turnId) {
-                    return;
-                }
+						if (event.name === "proxyEmitToken") {
+							onToken(parsedPayload.payload);
+						} else if (event.name === "proxyEmitError") {
+							rollback().then(() => reject(new Error(parsedPayload.payload)));
+						} else if (event.name === "proxyEmitComplete") {
+							rollback().then(() => resolve());
+						}
+					}
+				};
 
-                if (event.name === 'proxyEmitToken') {
-                  onToken(parsedPayload.payload);
-                } else if (event.name === 'proxyEmitError') {
-                  rollback().then(() => reject(new Error(parsedPayload.payload)));
-                } else if (event.name === 'proxyEmitComplete') {
-                  rollback().then(() => resolve());
-                }
-            }
-          };
+				this.cdp.on("Runtime.bindingCalled", bindingHandler);
+			});
 
-          this.cdp.on('Runtime.bindingCalled', bindingHandler);
-        });
-
-        // Inject the observer now, so we are guaranteed it is active BEFORE this setup resolves
-        const script = `
+			// Inject the observer now, so we are guaranteed it is active BEFORE this setup resolves
+			const script = `
             (function() {
                 // Initialize turn-specific state
                 window['__proxyTurn_${turnId}'] = {
@@ -338,6 +354,8 @@ export class StreamListener {
                         const elements = document.querySelectorAll(activeSelector);
                         if (elements.length > initialCount) {
                              generatingElement = elements[elements.length - 1];
+                        } else if (elements.length > 0 && elements[elements.length - 1].textContent?.trim()) {
+                             generatingElement = elements[elements.length - 1];
                         }
                     }
 
@@ -405,6 +423,8 @@ export class StreamListener {
                         const elements = document.querySelectorAll(activeSelector);
                         if (elements.length > initialCount) {
                              generatingElement = elements[elements.length - 1];
+                        } else if (elements.length > 0 && elements[elements.length - 1].textContent?.trim()) {
+                             generatingElement = elements[elements.length - 1];
                         }
                     }
 
@@ -449,24 +469,26 @@ export class StreamListener {
             })();
         `;
 
-        const res = await this.cdp.send('Runtime.evaluate', { expression: script, returnByValue: true });
-        const resVal = res?.result?.value ?? res?.value;
-        if (resVal !== "READY") {
-             throw new Error("StreamListener failed to setup DOM observer.");
-        }
+			const res = await this.cdp.send("Runtime.evaluate", {
+				expression: script,
+				returnByValue: true,
+			});
+			const resVal = res?.result?.value ?? res?.value;
+			if (resVal !== "READY") {
+				throw new Error("StreamListener failed to setup DOM observer.");
+			}
 
-        isSetup = true;
+			isSetup = true;
 
-        return {
-            waitForCompletion: () => completionPromise,
-            cleanup: rollback
-        };
-
-    } catch (e) {
-        if (!isSetup) {
-            await rollback();
-        }
-        throw e;
-    }
-  }
+			return {
+				waitForCompletion: () => completionPromise,
+				cleanup: rollback,
+			};
+		} catch (e) {
+			if (!isSetup) {
+				await rollback();
+			}
+			throw e;
+		}
+	}
 }

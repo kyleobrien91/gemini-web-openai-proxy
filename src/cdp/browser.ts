@@ -1,57 +1,98 @@
-import { CDPConnection } from './connection.js';
-import { TabManager } from './tab-manager.js';
-import { ModeSwitcher } from './mode-switcher.js';
-import { StreamListener, StreamListenerHandle } from './stream-listener.js';
-import { config } from '../config.js';
+import { config } from "../config.js";
+import type { UploadableFile } from "../prompt/file-extractor.js";
+import { CDPConnection } from "./connection.js";
+import { ModeSwitcher } from "./mode-switcher.js";
+import { ScottyUploader } from "./scotty-uploader.js";
+import {
+	StreamListener,
+	type StreamListenerHandle,
+} from "./stream-listener.js";
+import { type StreamGenerateHandle, StreamService } from "./stream-service.js";
+import { TabManager } from "./tab-manager.js";
+
+export type TurnStreamHandle = StreamListenerHandle | StreamGenerateHandle;
 
 export class BrowserWorker {
-    public cdp: CDPConnection;
-    public tabManager: TabManager;
-    public modeSwitcher: ModeSwitcher;
-    public streamListener: StreamListener;
+	public cdp: CDPConnection;
+	public tabManager: TabManager;
+	public modeSwitcher: ModeSwitcher;
+	public streamListener: StreamListener;
+	public scottyUploader: ScottyUploader;
+	public streamService: StreamService;
 
-    constructor() {
-        this.cdp = new CDPConnection();
-        this.tabManager = new TabManager(this.cdp);
-        this.modeSwitcher = new ModeSwitcher(this.cdp);
-        this.streamListener = new StreamListener(this.cdp);
-    }
+	constructor() {
+		this.cdp = new CDPConnection();
+		this.tabManager = new TabManager(this.cdp);
+		this.modeSwitcher = new ModeSwitcher(this.cdp);
+		this.streamListener = new StreamListener(this.cdp);
+		this.scottyUploader = new ScottyUploader(this.cdp);
+		this.streamService = new StreamService(this.cdp);
+	}
 
-    private async initialize(isRetry: boolean = false) {
-        const target = await this.cdp.discoverTarget();
-        await this.cdp.connect(target.webSocketDebuggerUrl);
-        // Only reset the chat tab if this is a fresh request
-        if (!isRetry) {
-             await this.tabManager.ensureGeminiTab();
-        }
-    }
+	private async initialize(isRetry: boolean = false) {
+		const target = await this.cdp.discoverTarget();
+		await this.cdp.connect(target.webSocketDebuggerUrl);
+		// Only reset the chat tab if this is a fresh request
+		if (!isRetry) {
+			await this.tabManager.ensureGeminiTab();
+		}
+	}
 
-    async submitPrompt(turnId: string, prompt: string, model: string, onToken: (token: string) => void, signal?: AbortSignal, isRetry: boolean = false): Promise<StreamListenerHandle | null> {
-        if (signal?.aborted) return null;
+	async submitPrompt(
+		turnId: string,
+		prompt: string,
+		model: string,
+		onToken: (token: string) => void,
+		signal?: AbortSignal,
+		isRetry: boolean = false,
+		attachments?: UploadableFile[],
+	): Promise<TurnStreamHandle | null> {
+		if (signal?.aborted) return null;
 
-        // Initialization happens inside the route lock. We pass isRetry to prevent chat reset.
-        await this.initialize(isRetry);
-        if (signal?.aborted) return null;
+		// Initialization happens inside the route lock. We pass isRetry to prevent chat reset.
+		await this.initialize(isRetry);
+		if (signal?.aborted) return null;
 
-        // 1. Switch mode
-        await this.modeSwitcher.switchMode(model);
-        if (signal?.aborted) return null;
+		// 1. Switch mode
+		await this.modeSwitcher.switchMode(model);
+		if (signal?.aborted) return null;
 
-        // 2. Setup listener BEFORE submitting, guaranteeing completion of setup
-        const streamHandle = await this.streamListener.setup(turnId, onToken, signal);
-        if (signal?.aborted) {
-            await streamHandle.cleanup();
-            return null;
-        }
+		// If multimodal attachments are provided, use direct Scotty upload + StreamGenerate transport
+		if (attachments && attachments.length > 0) {
+			const uploadedBlobs = await this.scottyUploader.uploadAll(
+				attachments,
+				signal,
+			);
+			if (signal?.aborted) return null;
 
-        // 3. Submit prompt via hardened DOM automation supporting up to 30k tokens
-        const timeoutMs = config.submitTimeoutMs;
-        // Escape-safe serialization preserving quotes, backslashes, XML tags, and newlines byte-for-byte
-        const serializedPrompt = JSON.stringify(prompt)
-            .replace(/\u2028/g, '\\u2028')
-            .replace(/\u2029/g, '\\u2029');
+			const streamHandle = await this.streamService.streamGenerate(
+				turnId,
+				{ model, prompt, blobs: uploadedBlobs },
+				onToken,
+				signal,
+			);
+			return streamHandle;
+		}
 
-        const script = `
+		// 2. Setup listener BEFORE submitting, guaranteeing completion of setup
+		const streamHandle = await this.streamListener.setup(
+			turnId,
+			onToken,
+			signal,
+		);
+		if (signal?.aborted) {
+			await streamHandle.cleanup();
+			return null;
+		}
+
+		// 3. Submit prompt via hardened DOM automation supporting up to 30k tokens
+		const timeoutMs = config.submitTimeoutMs;
+		// Escape-safe serialization preserving quotes, backslashes, XML tags, and newlines byte-for-byte
+		const serializedPrompt = JSON.stringify(prompt)
+			.replace(/\u2028/g, "\\u2028")
+			.replace(/\u2029/g, "\\u2029");
+
+		const script = `
             (async function(inputPrompt, timeoutLimitMs) {
                 const state = window['__proxyTurn_${turnId}'];
                 if (!state || state.aborted) return "ABORTED";
@@ -181,35 +222,35 @@ export class BrowserWorker {
             })(${serializedPrompt}, ${timeoutMs})
         `;
 
-        let submitRes;
-        try {
-            submitRes = await this.cdp.send('Runtime.evaluate', {
-                expression: script,
-                awaitPromise: true,
-                returnByValue: true
-            });
-        } catch (e) {
-            // CDP connection dropped or evaluation failed fundamentally mid-flight.
-            // We must strictly clean up the active StreamListener so it doesn't leak into the next request.
-            await streamHandle.cleanup();
-            throw e;
-        }
+		let submitRes: any;
+		try {
+			submitRes = await this.cdp.send("Runtime.evaluate", {
+				expression: script,
+				awaitPromise: true,
+				returnByValue: true,
+			});
+		} catch (e) {
+			// CDP connection dropped or evaluation failed fundamentally mid-flight.
+			// We must strictly clean up the active StreamListener so it doesn't leak into the next request.
+			await streamHandle.cleanup();
+			throw e;
+		}
 
-        const submitVal = submitRes?.result?.value ?? submitRes?.value;
+		const submitVal = submitRes?.result?.value ?? submitRes?.value;
 
-        if (submitVal === "ABORTED") {
-            await streamHandle.cleanup();
-            return null;
-        }
+		if (submitVal === "ABORTED") {
+			await streamHandle.cleanup();
+			return null;
+		}
 
-        if (submitVal !== "SUCCESS") {
-            await streamHandle.cleanup();
-            throw new Error(`Failed to submit prompt: ${submitVal}`);
-        }
+		if (submitVal !== "SUCCESS") {
+			await streamHandle.cleanup();
+			throw new Error(`Failed to submit prompt: ${submitVal}`);
+		}
 
-        // 4. Return handle so caller can await completion
-        return streamHandle;
-    }
+		// 4. Return handle so caller can await completion
+		return streamHandle;
+	}
 }
 
 export const browserWorker = new BrowserWorker();
