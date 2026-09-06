@@ -136,9 +136,9 @@ export function getModel(modelId: string): ModelDefinition | undefined {
 }
 
 export function resolveTargetModelId(modelId: string): string | undefined {
-    const model = getModel(modelId);
-    if (!model) return undefined;
-    return model.aliasFor ? model.aliasFor : model.id;
+	const model = getModel(modelId);
+	if (!model) return undefined;
+	return model.aliasFor ? model.aliasFor : model.id;
 }
 
 export function resolveTargetModel(modelId: string): ModelDefinition | undefined {

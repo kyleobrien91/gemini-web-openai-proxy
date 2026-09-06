@@ -1,28 +1,28 @@
-import { CDPConnection } from './connection.js';
-import { getModel, resolveTargetModel, modelRegistry } from '../models/registry.js';
+import { getModel, modelRegistry, resolveTargetModel } from "../models/registry.js";
+import type { CDPConnection } from "./connection.js";
 
 export class ModeSwitcher {
-  private cdp: CDPConnection;
+	private cdp: CDPConnection;
 
-  constructor(cdp: CDPConnection) {
-    this.cdp = cdp;
-  }
+	constructor(cdp: CDPConnection) {
+		this.cdp = cdp;
+	}
 
-  async switchMode(modelName: string): Promise<void> {
-    const targetModel = resolveTargetModel(modelName);
-    if (!targetModel) {
-      throw new Error(`Unknown model: ${modelName}. Supported models are: ${Object.keys(modelRegistry).join(', ')}.`);
-    }
+	async switchMode(modelName: string): Promise<void> {
+		const targetModel = resolveTargetModel(modelName);
+		if (!targetModel) {
+			throw new Error(`Unknown model: ${modelName}. Supported models are: ${Object.keys(modelRegistry).join(", ")}.`);
+		}
 
-    if (targetModel.id === 'default') {
-      return; // Keep current UI selection
-    }
+		if (targetModel.id === "default") {
+			return; // Keep current UI selection
+		}
 
-    const testId = targetModel.webDomTestId || '';
-    const targetModelId = targetModel.id;
-    const targetExtendedThinking = targetModel.extendedThinking;
+		const testId = targetModel.webDomTestId || "";
+		const targetModelId = targetModel.id;
+		const targetExtendedThinking = targetModel.extendedThinking;
 
-    const script = `
+		const script = `
       (async function() {
         function findMenuButton() {
           return document.querySelector('button[data-test-id="bard-mode-menu-button"], button.input-area-switch, button[aria-label*="mode picker"], button[aria-label*="Mode picker"]');
@@ -143,30 +143,33 @@ export class ModeSwitcher {
       })();
     `;
 
-    try {
-      const res = await this.cdp.send('Runtime.evaluate', {
-        expression: script,
-        awaitPromise: true,
-        returnByValue: true
-      });
+		try {
+			const res = await this.cdp.send("Runtime.evaluate", {
+				expression: script,
+				awaitPromise: true,
+				returnByValue: true,
+			});
 
-      const resValue = res?.value ?? res?.result?.value;
-      if (resValue) {
-          if (resValue === "MENU_NOT_FOUND" || resValue === "OPTION_NOT_FOUND") {
-               throw new Error(`Failed to locate model option for ${modelName} in the UI (${resValue}). Ensure your account has access to this model.`);
-          }
-          if (resValue !== "SUCCESS") {
-               throw new Error(`Model switch failed for ${modelName}. Debug state: ${resValue}`);
-          }
-          // Success!
-      } else {
-          throw new Error(`Unexpected failure executing mode switch script.`);
-      }
-
-    } catch (e) {
-      console.error('Failed to switch model mode via CDP', e);
-      throw e;
-    }
-  }
+			const resValue = res?.value ?? res?.result?.value;
+			if (resValue) {
+				if (resValue === "MENU_NOT_FOUND" || resValue === "OPTION_NOT_FOUND") {
+					throw new Error(
+						`Failed to locate model option for ${modelName} in the UI (${resValue}). Ensure your account has access to this model.`,
+					);
+				}
+				if (resValue !== "SUCCESS") {
+					throw new Error(
+						`Model switch failed for ${modelName}. Debug state: ${resValue}`,
+					);
+				}
+				// Success!
+			} else {
+				throw new Error("Unexpected failure executing mode switch script.");
+			}
+		} catch (e) {
+			console.error("Failed to switch model mode via CDP", e);
+			throw e;
+		}
+	}
 }
 
